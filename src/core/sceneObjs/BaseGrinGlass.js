@@ -15,6 +15,7 @@
  */
 
 import BaseGlass from './BaseGlass.js';
+import { glassShadeAlpha } from './glassShading.js';
 import geometry from '../geometry.js';
 import Simulator from '../Simulator.js';
 import i18next from 'i18next';
@@ -472,7 +473,7 @@ class BaseGrinGlass extends BaseGlass {
       return null;
     }
 
-    const alpha = Math.max(0, Math.min(1, Math.abs(Math.log(refIndex) / Math.log(1.5) * 0.2)));
+    const alpha = Math.max(0, Math.min(1, Math.abs(glassShadeAlpha(refIndex, this.scene))));
     if (alpha === 0) {
       return { r: 0, g: 0, b: 0, a: 0 };
     }

@@ -228,6 +228,24 @@ through the scene's `theme`, which already accepts per-scene overrides:
 "theme": { "directionPoint": { "color": { "r": 1, "g": 0, "b": 0, "a": 0 } } }
 ```
 
+### Glass that is too faint to see
+
+Glass is shaded by its refractive index on a logarithmic scale pinned so that ordinary glass at 1.5
+is drawn with a fill of 0.2. A weakly refracting material is therefore drawn very faintly — at an
+index of 1.2 the fill is 0.09, which on a black background is close to nothing, and an exercise
+about such a material ends up asking the student to drag something they can barely see.
+`theme.glass.contrast` scales the whole relation, so the drawing can be made legible without
+changing the optics:
+
+```json
+"theme": { "glass": { "contrast": 2.2 } }
+```
+
+A contrast of `log(1.5) / log(n)` draws an index of `n` with the weight that 1.5 has by default:
+2.2 for an index of 1.2, and 1.4 for 1.33. It applies
+everywhere an index is shaded — the polygon and curve glasses, the GRIN materials, and the ideal
+lens drawn realistically — and it is purely a display setting; no ray is affected.
+
 ## `task` — the assignment
 
 ```json

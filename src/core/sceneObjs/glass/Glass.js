@@ -26,6 +26,64 @@ function normalizeAngle(angle) {
 }
 
 /**
+ * Whether a point of the circle through an arc lies on the drawn part of it, given the arc's two
+ * ends `p1` and `p2` and the point `p3` in the middle that fixes which way round it goes. The
+ * comparisons are strict, so a point at either end of the arc counts as not on it and is left to
+ * the segment that continues from there.
+ * @param {Point} center - The centre of the circle.
+ * @param {Point} p1 - One end of the arc.
+ * @param {Point} p2 - The other end.
+ * @param {Point} p3 - The point between them.
+ * @param {Point} q - The point to test, which is assumed to be on the circle.
+ * @returns {boolean} Whether `q` is on the arc.
+ */
+function isOnArc(center, p1, p2, p3, q) {
+  const a1 = Math.atan2(p1.y - center.y, p1.x - center.x);
+  const a2 = Math.atan2(p2.y - center.y, p2.x - center.x);
+  const between = (a) => (a2 < a && a < a1) || (a1 < a2 && a2 < a) || (a < a1 && a1 < a2);
+  return between(Math.atan2(p3.y - center.y, p3.x - center.x)) ===
+    between(Math.atan2(q.y - center.y, q.x - center.x));
+}
+
+/**
+ * How many times a ray cast in the +x direction from `point` crosses the segment `a`--`b`.
+ *
+ * The rule on y is half-open, so a vertex shared by two segments is counted for exactly one of
+ * them and the parity stays right when the ray passes through a corner.
+ * @param {Point} a - One end of the segment.
+ * @param {Point} b - The other end.
+ * @param {Point} point - Where the ray starts.
+ * @returns {number} 0 or 1.
+ */
+function segmentCrossings(a, b, point) {
+  if ((a.y > point.y) === (b.y > point.y)) return 0;
+  return a.x + (point.y - a.y) / (b.y - a.y) * (b.x - a.x) > point.x ? 1 : 0;
+}
+
+/**
+ * How many times the same ray crosses one circular arc: nought, one or two.
+ * @param {Point} center - The centre of the circle the arc is part of.
+ * @param {number} r - Its radius.
+ * @param {Point} p1 - One end of the arc.
+ * @param {Point} p2 - The other end.
+ * @param {Point} p3 - The point between them.
+ * @param {Point} point - Where the ray starts.
+ * @returns {number} 0, 1 or 2.
+ */
+function arcCrossings(center, r, p1, p2, p3, point) {
+  const dy = point.y - center.y;
+  // At `>= r` the line is tangent to the circle rather than crossing it, and a tangent touch would
+  // otherwise be counted twice.
+  if (Math.abs(dy) >= r) return 0;
+  const dx = Math.sqrt(r * r - dy * dy);
+  let crossings = 0;
+  for (const x of [center.x - dx, center.x + dx]) {
+    if (x > point.x && isOnArc(center, p1, p2, p3, geometry.point(x, point.y))) crossings++;
+  }
+  return crossings;
+}
+
+/**
  * Glass of the shape consists of line segments or circular arcs.
  * 
  * Tools -> Glass -> Polygon / Circular Arcs
@@ -399,6 +457,58 @@ class Glass extends BaseGlass {
         }
       }
     }
+
+    if (this.isInsideShape(mouse.pos)) {
+      // Dragging the entire this
+      const mousePos = mouse.getPosSnappedToGrid();
+      dragContext.part = 0;
+      dragContext.mousePos0 = mousePos; // Mouse position when the user starts dragging
+      dragContext.mousePos1 = mousePos; // Mouse position at the last moment during dragging
+      dragContext.snapContext = {};
+      return dragContext;
+    }
+  }
+
+  /**
+   * Whether a point is in the interior of the shape, so that the glass can be grabbed anywhere it
+   * is drawn and not on its outline alone. A thin piece of glass is otherwise hard to pick up, and
+   * in a task scene, where reshaping is usually off, the outline is the only thing the student can
+   * aim at.
+   *
+   * This is the crossing number of a ray cast in the +x direction: odd means inside. The parity
+   * rule is the same one the tracer uses in {@link Glass#getIncidentData} to tell inside from
+   * outside, so what can be grabbed is exactly what refracts, even for a shape that crosses itself.
+   * @param {Point} point - The point to test, in scene coordinates.
+   * @returns {boolean} Whether the point is inside the glass.
+   */
+  isInsideShape(point) {
+    if (this.notDone || this.path.length < 3) return false;
+
+    let crossings = 0;
+    for (let i = 0; i < this.path.length; i++) {
+      const prev = this.path[i % this.path.length];
+      // The middle point of an arc, which was dealt with together with the two ends of that arc.
+      if (prev.arc) continue;
+      const next = this.path[(i + 1) % this.path.length];
+
+      if (next.arc) {
+        // The arc i->i+1->i+2.
+        const p1 = geometry.point(prev.x, prev.y);
+        const p3 = geometry.point(next.x, next.y);
+        const p2 = geometry.point(this.path[(i + 2) % this.path.length].x, this.path[(i + 2) % this.path.length].y);
+        const center = geometry.linesIntersection(geometry.perpendicularBisector(geometry.line(p1, p3)), geometry.perpendicularBisector(geometry.line(p2, p3)));
+        if (isFinite(center.x) && isFinite(center.y)) {
+          crossings += arcCrossings(center, geometry.distance(center, p3), p1, p2, p3, point);
+        } else {
+          // The three points of the arc are colinear. Treat as a line segment.
+          crossings += segmentCrossings(p1, p2, point);
+        }
+      } else {
+        crossings += segmentCrossings(prev, next, point);
+      }
+    }
+
+    return crossings % 2 === 1;
   }
 
   onDrag(mouse, dragContext, ctrl, shift) {
