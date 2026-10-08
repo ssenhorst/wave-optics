@@ -1,0 +1,88 @@
+{
+  "version": 5,
+  "name": "collimate_the_beam",
+  "objs": [
+    {
+      "type": "AngleSource",
+      "name": "Lamp",
+      "p1": {
+        "x": 300,
+        "y": 350
+      },
+      "p2": {
+        "x": 340,
+        "y": 350
+      },
+      "brightness": 1,
+      "emisAngle": 44,
+      "interaction": {
+        "move": true,
+        "reshape": false
+      }
+    },
+    {
+      "type": "IdealLens",
+      "name": "Collimator",
+      "p1": {
+        "x": 620,
+        "y": 170
+      },
+      "p2": {
+        "x": 620,
+        "y": 530
+      },
+      "focalLength": 180,
+      "interaction": {
+        "enabled": false
+      },
+      "showOpticalAxis": true,
+      "showFocalPoints": true
+    }
+  ],
+  "width": 1150,
+  "height": 620,
+  "rayModeDensity": 0.1,
+  "origin": {
+    "x": 0,
+    "y": -120
+  },
+  "scale": 1,
+  "interaction": {
+    "enabled": false,
+    "create": false,
+    "pan": true,
+    "zoom": true,
+    "keyboard": false
+  },
+  "ui": {
+    "toolbar": false,
+    "objectBar": false,
+    "sidebar": false,
+    "statusBar": false
+  },
+  "task": {
+    "title": "Collimate the lamp",
+    "description": "Drag the lamp until the light leaving the lens is a parallel beam travelling straight to the right. The lens is fixed; only the lamp can move.",
+    "hint": "A thin lens turns light from a point in its front focal plane into a parallel beam. The focal length is written next to the lens.",
+    "successMessage": "The lamp is in the focal plane, so every ray leaves the lens parallel to the axis.",
+    "goals": [
+      {
+        "id": "parallel",
+        "type": "collimated",
+        "title": "Make the outgoing rays parallel to the axis",
+        "angle": 0,
+        "tolerance": 1.2
+      }
+    ]
+  },
+  "theme": {
+    "directionPoint": {
+      "color": {
+        "r": 1,
+        "g": 0,
+        "b": 0,
+        "a": 0
+      }
+    }
+  }
+}

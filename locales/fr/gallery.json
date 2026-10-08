@@ -1,0 +1,10 @@
+{
+  "galleryPage": {
+    "title": "La Gallerie de Ray Optics",
+    "description": "Vous trouverez ici une collection de simulations crées utilisant l'[application web](/simulator), qui peuvent être utilisées comme des démonstrations interactives d'optique. Vous êtes les bienvenus pour créer de nouveaux éléments. Lisez le [guide du contributeur](/contributing/gallery) pour plus d'informations. Pour signaler une erreur, veuillez [ouvrir une Issue sur GitHub](/github/issues) ou envoyer un mail à [ray-optics@phydemo.app](/email).",
+    "contributors_one": "Contributeur : {{contributors}}",
+    "contributors_many": "Contributeurs : {{contributors}}",
+    "contributors_other": "Contributeurs : {{contributors}}",
+    "openInSimulator": "Ouvrir dans le Simulateur"
+  }
+}

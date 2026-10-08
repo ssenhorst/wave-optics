@@ -1,0 +1,898 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>JSDoc: Source: core/waveOptics/WaveFieldEngineWebGL2.js</title>
+
+    <script src="scripts/prettify/prettify.js"> </script>
+    <script src="scripts/prettify/lang-css.js"> </script>
+    <!--[if lt IE 9]>
+      <script src="//html5shiv.googlecode.com/svn/trunk/html5.js"></script>
+    <![endif]-->
+    <link type="text/css" rel="stylesheet" href="styles/prettify-tomorrow.css">
+    <link type="text/css" rel="stylesheet" href="styles/jsdoc-default.css">
+</head>
+
+<body>
+
+<div id="main">
+
+    <h1 class="page-title">Source: core/waveOptics/WaveFieldEngineWebGL2.js</h1>
+
+    
+
+
+
+    
+    <section>
+        <article>
+            <pre class="prettyprint source linenums"><code>/*
+ * Copyright 2026 The Wave Optics Simulation authors and contributors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/**
+ * @file The GPU backend.
+ *
+ * Three kinds of pass run here:
+ *
+ * 1. **Chain passes**, one per interface in order along the optical axis. Each
+ *    evaluates the field arriving at that interface's sample sites from the
+ *    subspace before it, multiplies by the transmission and the arc length, and
+ *    leaves the result as the secondary-source weights radiating into the
+ *    subspace beyond. These run sequentially because each depends on the last.
+ * 2. **Field passes**, one per subspace, each drawing a full-screen quad that
+ *    discards the pixels belonging to other subspaces. They share one float
+ *    texture, which ends up holding the complex field over the whole view.
+ * 3. **The display pass**, which colours that texture.
+ *
+ * The split matters for performance: a time-harmonic field does not depend on
+ * time, so the first two run only when the scene changes, and animation re-runs
+ * the third alone.
+ *
+ * WebGL2 rather than WebGL1: rendering into a float texture needs
+ * `EXT_color_buffer_float`, and indexing the source tables needs `texelFetch`.
+ */
+
+import { buildHankelGlsl } from './hankel.js';
+import { wavenumber, minimumRadius } from './conventions.js';
+import { getColormapTableRGBA, COLORMAP_SIZE } from './colormaps.js';
+import { buildOklchGlsl, DEFAULT_PHASE_CHROMA } from './oklch.js';
+import { FloatTable, BoundaryLut, BOUNDARY_LUT_WIDTH } from './gpuTables.js';
+
+/** Texture units, fixed so the two summation programs bind identically. */
+const UNIT_DIRECTIONAL_GEOMETRY = 0;
+const UNIT_DIRECTIONAL_WEIGHTS = 1;
+const UNIT_ISOTROPIC_GEOMETRY = 2;
+const UNIT_ISOTROPIC_WEIGHTS = 3;
+const UNIT_PLANE_GEOMETRY = 4;
+const UNIT_PLANE_WEIGHTS = 5;
+const UNIT_EXTRA_A = 6;
+const UNIT_EXTRA_B = 7;
+
+const FULLSCREEN_VERTEX_SHADER = `#version 300 es
+// A single oversized triangle covering the viewport; no vertex buffer needed.
+void main() {
+  vec2 corner = vec2(float((gl_VertexID &lt;&lt; 1) &amp; 2), float(gl_VertexID &amp; 2));
+  gl_Position = vec4(corner * 2.0 - 1.0, 0.0, 1.0);
+}
+`;
+
+/**
+ * The summation both the chain and the field passes perform.
+ *
+ * Sources are ordered directional-first, matching the CPU reference, so no
+ * per-source kind flag is needed: the first `uDirCount` entries came from an
+ * interface and re-radiate through the Rayleigh-Sommerfeld kernel, and the
+ * rest are isotropic point sources.
+ */
+const SUMMATION_GLSL = `
+precision highp float;
+precision highp int;
+precision highp sampler2D;
+
+uniform sampler2D uDirGeometry;   // (x, y, nx, ny)
+uniform sampler2D uDirWeights;    // (Re, Im, -, -)
+uniform sampler2D uIsoGeometry;   // (x, y, -, -)
+uniform sampler2D uIsoWeights;    // (Re, Im, -, -)
+uniform sampler2D uPlaneGeometry; // (dir x, dir y, anchor x, anchor y)
+uniform sampler2D uPlaneWeights;  // (Re, Im, -, -)
+uniform int uDirCount;
+uniform int uDirWidth;
+uniform int uIsoCount;
+uniform int uIsoWidth;
+uniform int uPlaneCount;
+uniform int uPlaneWidth;
+uniform float uWavenumber;
+uniform float uMinRadius;
+
+${buildHankelGlsl()}
+
+vec2 cmul(vec2 a, vec2 b) {
+  return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
+}
+
+vec2 sumField(vec2 p) {
+  vec2 total = vec2(0.0);
+
+  for (int i = 0; i &lt; uDirCount; i++) {
+    ivec2 uv = ivec2(i % uDirWidth, i / uDirWidth);
+    vec4 site = texelFetch(uDirGeometry, uv, 0);
+    vec2 weight = texelFetch(uDirWeights, uv, 0).xy;
+    vec2 offset = p - site.xy;
+    float r = max(length(offset), uMinRadius);
+    float cosTheta = dot(site.zw, offset) / r;
+    total += cmul(rayleighSommerfeldKernel(uWavenumber * r, cosTheta, uWavenumber), weight);
+  }
+
+  for (int i = 0; i &lt; uIsoCount; i++) {
+    ivec2 uv = ivec2(i % uIsoWidth, i / uIsoWidth);
+    vec2 position = texelFetch(uIsoGeometry, uv, 0).xy;
+    vec2 weight = texelFetch(uIsoWeights, uv, 0).xy;
+    float r = max(distance(p, position), uMinRadius);
+    total += cmul(greensFunction(uWavenumber * r), weight);
+  }
+
+  // Plane waves are evaluated in closed form. They are not built from point
+  // sources, so they carry no aperture diffraction of their own.
+  for (int i = 0; i &lt; uPlaneCount; i++) {
+    ivec2 uv = ivec2(i % uPlaneWidth, i / uPlaneWidth);
+    vec4 wave = texelFetch(uPlaneGeometry, uv, 0);
+    vec2 weight = texelFetch(uPlaneWeights, uv, 0).xy;
+    float phase = uWavenumber * dot(wave.xy, p - wave.zw);
+    total += cmul(vec2(cos(phase), sin(phase)), weight);
+  }
+
+  return total;
+}
+`;
+
+const CHAIN_FRAGMENT_SHADER = `#version 300 es
+${SUMMATION_GLSL}
+
+uniform sampler2D uSiteGeometry;      // (x, y, nx, ny) of this interface
+uniform sampler2D uSiteTransmission;  // (Re t, Im t, ds, -)
+
+out vec4 fragColor;
+
+void main() {
+  ivec2 uv = ivec2(gl_FragCoord.xy);
+  vec4 site = texelFetch(uSiteGeometry, uv, 0);
+  vec4 transmission = texelFetch(uSiteTransmission, uv, 0);
+
+  // Padding entries carry a zero transmission, so they contribute nothing.
+  vec2 incident = sumField(site.xy);
+  fragColor = vec4(cmul(transmission.xy, incident) * transmission.z, 0.0, 1.0);
+}
+`;
+
+const FIELD_FRAGMENT_SHADER = `#version 300 es
+${SUMMATION_GLSL}
+
+uniform vec2 uGridOrigin;
+uniform vec2 uGridStep;
+uniform sampler2D uLowerLut;
+uniform sampler2D uUpperLut;
+uniform vec4 uLowerRange;   // (yMin, yMax, z below yMin, z above yMax)
+uniform vec4 uUpperRange;
+uniform int uHasLower;
+uniform int uHasUpper;
+// +1 when light travels towards +x, -1 when it travels the other way. Every
+// subspace test is the same comparison with this factor on both sides.
+uniform float uAxisSign;
+
+out vec4 fragColor;
+
+// Where an interface sits at a given transverse position. Past the ends it
+// holds the axial position of the nearer end, which is what makes a short
+// interface behave as an opaque screen continuing to the edges of the view.
+float boundaryZ(sampler2D lut, vec4 range, float y) {
+  if (y &lt;= range.x) return range.z;
+  if (y >= range.y) return range.w;
+  float t = (y - range.x) / (range.y - range.x);
+  float u = mix(0.5 / ${BOUNDARY_LUT_WIDTH}.0, (${BOUNDARY_LUT_WIDTH}.0 - 0.5) / ${BOUNDARY_LUT_WIDTH}.0, t);
+  return texture(lut, vec2(u, 0.5)).r;
+}
+
+void main() {
+  // uGridStep.y is negative: framebuffer row 0 is the bottom of the screen,
+  // which is the largest scene y.
+  vec2 p = uGridOrigin + uGridStep * (gl_FragCoord.xy - 0.5);
+
+  float axial = uAxisSign * p.x;
+  if (uHasLower == 1 &amp;&amp; axial &lt; uAxisSign * boundaryZ(uLowerLut, uLowerRange, p.y)) discard;
+  if (uHasUpper == 1 &amp;&amp; axial >= uAxisSign * boundaryZ(uUpperLut, uUpperRange, p.y)) discard;
+
+  vec2 total = sumField(p);
+  // The amplitude is stored alongside the complex field. The display pass
+  // magnifies this texture with linear filtering, and interpolating a rapidly
+  // oscillating Re/Im pair and *then* taking its magnitude loses amplitude
+  // between samples, which shows up as false rings at the grid pitch. |U| is
+  // smooth, so interpolating it directly is well behaved.
+  fragColor = vec4(total, length(total), 1.0);
+}
+`;
+
+const DISPLAY_FRAGMENT_SHADER = `#version 300 es
+precision highp float;
+precision highp sampler2D;
+
+uniform sampler2D uField;
+uniform sampler2D uColormap;
+uniform vec2 uResolution;
+uniform int uView;          // 0 = intensity, 1 = field, 2 = amplitude/phase
+uniform float uScale;       // reference amplitude the colour scale saturates at
+uniform float uLowerCutoff; // intensity floor, as a fraction of full scale
+uniform float uPhase;       // w t
+uniform int uLogScale;
+uniform float uDynamicRange; // decibels, when uLogScale is set
+uniform float uChroma;       // peak chroma of the amplitude/phase view
+
+out vec4 fragColor;
+
+const float LN10 = 2.302585092994046;
+
+${buildOklchGlsl()}
+
+// Sample the colormap at texel centres so the ends are not half-clipped.
+vec3 applyColormap(float t) {
+  float u = mix(0.5 / ${COLORMAP_SIZE}.0, (${COLORMAP_SIZE}.0 - 0.5) / ${COLORMAP_SIZE}.0, clamp(t, 0.0, 1.0));
+  return texture(uColormap, vec2(u, 0.5)).rgb;
+}
+
+void main() {
+  vec4 fieldSample = texture(uField, gl_FragCoord.xy / uResolution);
+  float scale = max(uScale, 1e-30);
+
+  if (uView == 2) {
+    // Amplitude and phase at once: |U| drives lightness, arg(U) becomes hue.
+    // The time factor e^{-i w t} rotates the phase, so Play turns this into a
+    // travelling-wave animation that still shows the amplitude envelope.
+    float amplitude = clamp(fieldSample.z / scale, 0.0, 1.0);
+    float phase = atan(fieldSample.y, fieldSample.x) - uPhase;
+    fragColor = vec4(amplitudePhaseColor(amplitude, phase, uChroma), 1.0);
+    return;
+  }
+
+  float t;
+
+  if (uView == 1) {
+    // Re{ U e^{-i w t} }, mapped symmetrically about the middle of the map.
+    float value = fieldSample.x * cos(uPhase) + fieldSample.y * sin(uPhase);
+    t = 0.5 + 0.5 * clamp(value / scale, -1.0, 1.0);
+  } else {
+    // fieldSample.z is |U|, interpolated directly rather than recomputed from
+    // the interpolated Re/Im, which would ripple at the grid pitch.
+    float intensity = fieldSample.z * fieldSample.z;
+    float reference = scale * scale;
+    if (uLogScale == 1) {
+      float decibels = 10.0 * log(max(intensity, 1e-30) / reference) / LN10;
+      t = (decibels + uDynamicRange) / uDynamicRange;
+    } else {
+      t = (intensity / reference - uLowerCutoff) / max(1.0 - uLowerCutoff, 1e-6);
+    }
+  }
+
+  fragColor = vec4(applyColormap(t), 1.0);
+}
+`;
+
+/**
+ * Compile one shader stage, reporting the driver's log on failure.
+ * @param {WebGL2RenderingContext} gl
+ * @param {number} type
+ * @param {string} source
+ * @returns {WebGLShader}
+ */
+function compileShader(gl, type, source) {
+  const shader = gl.createShader(type);
+  gl.shaderSource(shader, source);
+  gl.compileShader(shader);
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    const log = gl.getShaderInfoLog(shader);
+    gl.deleteShader(shader);
+    throw new Error(`Wave field shader failed to compile: ${log}`);
+  }
+  return shader;
+}
+
+/**
+ * Link a program from the shared full-screen vertex shader and a fragment shader.
+ * @param {WebGL2RenderingContext} gl
+ * @param {string} fragmentSource
+ * @returns {WebGLProgram}
+ */
+function linkProgram(gl, fragmentSource) {
+  const program = gl.createProgram();
+  const vertex = compileShader(gl, gl.VERTEX_SHADER, FULLSCREEN_VERTEX_SHADER);
+  const fragment = compileShader(gl, gl.FRAGMENT_SHADER, fragmentSource);
+  gl.attachShader(program, vertex);
+  gl.attachShader(program, fragment);
+  gl.linkProgram(program);
+  gl.deleteShader(vertex);
+  gl.deleteShader(fragment);
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    const log = gl.getProgramInfoLog(program);
+    gl.deleteProgram(program);
+    throw new Error(`Wave field program failed to link: ${log}`);
+  }
+  return program;
+}
+
+/**
+ * Look up several uniform locations at once.
+ * @param {WebGL2RenderingContext} gl
+ * @param {WebGLProgram} program
+ * @param {string[]} names
+ * @returns {Object&lt;string, WebGLUniformLocation>}
+ */
+function collectUniforms(gl, program, names) {
+  const uniforms = {};
+  for (const name of names) uniforms[name] = gl.getUniformLocation(program, name);
+  return uniforms;
+}
+
+const SUMMATION_UNIFORMS = [
+  'uDirGeometry', 'uDirWeights', 'uIsoGeometry', 'uIsoWeights',
+  'uPlaneGeometry', 'uPlaneWeights',
+  'uDirCount', 'uDirWidth', 'uIsoCount', 'uIsoWidth',
+  'uPlaneCount', 'uPlaneWidth',
+  'uWavenumber', 'uMinRadius',
+];
+
+/**
+ * Obtain a WebGL2 context suitable for the wave renderer.
+ * @param {HTMLCanvasElement} canvas
+ * @returns {WebGL2RenderingContext}
+ * @throws If WebGL2 or float render targets are unavailable.
+ */
+export function createWaveRenderingContext(canvas) {
+  const gl = canvas.getContext('webgl2', {
+    alpha: true,
+    premultipliedAlpha: true,
+    antialias: false,
+    depth: false,
+    stencil: false,
+    // The field is drawn on demand, not once per frame, so the drawing buffer
+    // must survive compositing. Without this the canvas can come back blank
+    // after the compositor re-rasterises it with nothing having changed.
+    preserveDrawingBuffer: true,
+  });
+  if (!gl) {
+    throw new Error('WebGL2 is not available in this browser.');
+  }
+  if (!gl.getExtension('EXT_color_buffer_float')) {
+    throw new Error('EXT_color_buffer_float is not supported, so the field cannot be computed at floating point precision.');
+  }
+  return gl;
+}
+
+/**
+ * The GPU field engine.
+ * @class
+ */
+class WaveFieldEngineWebGL2 {
+  /**
+   * @param {WebGL2RenderingContext} gl
+   */
+  constructor(gl) {
+    this.gl = gl;
+
+    // Linear filtering of float textures is a separate extension. Without it
+    // the field is still correct, just blocky when magnified.
+    this.hasLinearFloat = Boolean(gl.getExtension('OES_texture_float_linear'));
+
+    this.chainProgram = linkProgram(gl, CHAIN_FRAGMENT_SHADER);
+    this.fieldProgram = linkProgram(gl, FIELD_FRAGMENT_SHADER);
+    this.displayProgram = linkProgram(gl, DISPLAY_FRAGMENT_SHADER);
+
+    this.chainUniforms = collectUniforms(gl, this.chainProgram, [
+      ...SUMMATION_UNIFORMS, 'uSiteGeometry', 'uSiteTransmission',
+    ]);
+    this.fieldUniforms = collectUniforms(gl, this.fieldProgram, [
+      ...SUMMATION_UNIFORMS, 'uGridOrigin', 'uGridStep',
+      'uLowerLut', 'uUpperLut', 'uLowerRange', 'uUpperRange',
+      'uHasLower', 'uHasUpper', 'uAxisSign',
+    ]);
+    this.displayUniforms = collectUniforms(gl, this.displayProgram, [
+      'uField', 'uColormap', 'uResolution', 'uView', 'uScale',
+      'uLowerCutoff', 'uPhase', 'uLogScale', 'uDynamicRange', 'uChroma',
+    ]);
+
+    // WebGL requires a bound vertex array even when the shader uses gl_VertexID.
+    this.vertexArray = gl.createVertexArray();
+
+    this.fieldTexture = gl.createTexture();
+    this.framebuffer = gl.createFramebuffer();
+    this.colormapTextures = new Map();
+
+    /** Per-subspace source tables, grown as scenes need them. */
+    this.subspaceTables = [];
+    /** Per-interface boundary lookup tables. */
+    this.boundaryLuts = [];
+
+    this.fieldWidth = 0;
+    this.fieldHeight = 0;
+    this.readbackBuffer = null;
+
+    /** @property {Object|null} lastStats - Amplitude statistics of the last computed field. */
+    this.lastStats = null;
+  }
+
+  /**
+   * The table set for one subspace, created on first use.
+   * @param {number} index
+   * @returns {Object}
+   * @private
+   */
+  tablesFor(index) {
+    while (this.subspaceTables.length &lt;= index) {
+      const gl = this.gl;
+      this.subspaceTables.push({
+        siteGeometry: new FloatTable(gl),
+        siteTransmission: new FloatTable(gl),
+        // The chain pass renders into this one.
+        siteWeights: new FloatTable(gl, true),
+        primaryGeometry: new FloatTable(gl),
+        primaryWeights: new FloatTable(gl),
+        planeGeometry: new FloatTable(gl),
+        planeWeights: new FloatTable(gl),
+      });
+    }
+    return this.subspaceTables[index];
+  }
+
+  /**
+   * The lookup table for one interface, created on first use.
+   * @param {number} index
+   * @returns {BoundaryLut}
+   * @private
+   */
+  boundaryLutFor(index) {
+    while (this.boundaryLuts.length &lt;= index) {
+      this.boundaryLuts.push(new BoundaryLut(this.gl, this.hasLinearFloat));
+    }
+    return this.boundaryLuts[index];
+  }
+
+  /**
+   * Allocate (or reallocate) the float texture the field is computed into.
+   * @param {number} width
+   * @param {number} height
+   * @private
+   */
+  resizeField(width, height) {
+    const gl = this.gl;
+    if (this.fieldWidth === width &amp;&amp; this.fieldHeight === height) return;
+
+    const filter = this.hasLinearFloat ? gl.LINEAR : gl.NEAREST;
+    gl.bindTexture(gl.TEXTURE_2D, this.fieldTexture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, width, height, 0, gl.RGBA, gl.FLOAT, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
+    gl.framebufferTexture2D(
+      gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.fieldTexture, 0
+    );
+    const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    if (status !== gl.FRAMEBUFFER_COMPLETE) {
+      throw new Error(`Wave field framebuffer is incomplete (status 0x${status.toString(16)}).`);
+    }
+
+    this.fieldWidth = width;
+    this.fieldHeight = height;
+    this.readbackBuffer = null;
+  }
+
+  /**
+   * Upload one subspace's sources.
+   * @param {number} index
+   * @param {Object} subspace
+   * @private
+   */
+  uploadSubspace(index, subspace) {
+    const tables = this.tablesFor(index);
+    const sites = subspace.surfaceSamples;
+    const primaries = subspace.primaries;
+
+    tables.siteGeometry.fill(sites.length, (i, buffer, at) => {
+      buffer[at] = sites[i].x;
+      buffer[at + 1] = sites[i].y;
+      buffer[at + 2] = sites[i].nx;
+      buffer[at + 3] = sites[i].ny;
+    });
+    tables.siteTransmission.fill(sites.length, (i, buffer, at) => {
+      buffer[at] = sites[i].tRe;
+      buffer[at + 1] = sites[i].tIm;
+      buffer[at + 2] = sites[i].ds;
+    });
+    tables.siteWeights.allocate(sites.length);
+
+    tables.primaryGeometry.fill(primaries.length, (i, buffer, at) => {
+      buffer[at] = primaries[i].x;
+      buffer[at + 1] = primaries[i].y;
+    });
+    tables.primaryWeights.fill(primaries.length, (i, buffer, at) => {
+      buffer[at] = primaries[i].re;
+      buffer[at + 1] = primaries[i].im;
+    });
+
+    const planeWaves = subspace.planeWaves ?? [];
+    tables.planeGeometry.fill(planeWaves.length, (i, buffer, at) => {
+      buffer[at] = planeWaves[i].dirX;
+      buffer[at + 1] = planeWaves[i].dirY;
+      buffer[at + 2] = planeWaves[i].x;
+      buffer[at + 3] = planeWaves[i].y;
+    });
+    tables.planeWeights.fill(planeWaves.length, (i, buffer, at) => {
+      buffer[at] = planeWaves[i].re;
+      buffer[at + 1] = planeWaves[i].im;
+    });
+  }
+
+  /**
+   * Bind one subspace's tables as the sources to sum over.
+   * @param {Object} uniforms
+   * @param {number} index
+   * @param {number} wavelength
+   * @param {number} refractiveIndex
+   * @private
+   */
+  bindSources(uniforms, index, wavelength, refractiveIndex) {
+    const gl = this.gl;
+    const tables = this.tablesFor(index);
+
+    const bind = (unit, table, location) => {
+      gl.activeTexture(gl.TEXTURE0 + unit);
+      gl.bindTexture(gl.TEXTURE_2D, table.texture);
+      gl.uniform1i(location, unit);
+    };
+    bind(UNIT_DIRECTIONAL_GEOMETRY, tables.siteGeometry, uniforms.uDirGeometry);
+    bind(UNIT_DIRECTIONAL_WEIGHTS, tables.siteWeights, uniforms.uDirWeights);
+    bind(UNIT_ISOTROPIC_GEOMETRY, tables.primaryGeometry, uniforms.uIsoGeometry);
+    bind(UNIT_ISOTROPIC_WEIGHTS, tables.primaryWeights, uniforms.uIsoWeights);
+    bind(UNIT_PLANE_GEOMETRY, tables.planeGeometry, uniforms.uPlaneGeometry);
+    bind(UNIT_PLANE_WEIGHTS, tables.planeWeights, uniforms.uPlaneWeights);
+
+    gl.uniform1i(uniforms.uDirCount, tables.siteGeometry.count);
+    gl.uniform1i(uniforms.uDirWidth, tables.siteGeometry.width);
+    gl.uniform1i(uniforms.uIsoCount, tables.primaryGeometry.count);
+    gl.uniform1i(uniforms.uIsoWidth, tables.primaryGeometry.width);
+    gl.uniform1i(uniforms.uPlaneCount, tables.planeGeometry.count);
+    gl.uniform1i(uniforms.uPlaneWidth, tables.planeGeometry.width);
+    gl.uniform1f(uniforms.uWavenumber, wavenumber(wavelength, refractiveIndex));
+    gl.uniform1f(uniforms.uMinRadius, minimumRadius(wavelength, refractiveIndex));
+  }
+
+  /**
+   * Run the whole computation: the propagation chain, then the field.
+   *
+   * @param {Object} model - As built by `buildWaveModel`.
+   */
+  computeField(model) {
+    const gl = this.gl;
+    const { subspaces, interfaces, grid, settings } = model;
+
+    this.resizeField(grid.width, grid.height);
+    for (let j = 0; j &lt; subspaces.length; j++) this.uploadSubspace(j, subspaces[j]);
+    for (let i = 0; i &lt; interfaces.length; i++) {
+      this.boundaryLutFor(i).update(interfaces[i]);
+    }
+
+    gl.disable(gl.BLEND);
+    gl.disable(gl.DEPTH_TEST);
+    gl.bindVertexArray(this.vertexArray);
+
+    this.runChainPasses(model);
+    this.runFieldPasses(model);
+
+    gl.bindVertexArray(null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+    // Block until the GPU has actually finished. Draw calls only queue work, so
+    // without this the caller would time the submission rather than the
+    // computation, and the resolution ladder would conclude that every grid is
+    // free and climb to the top whatever the machine can do.
+    gl.finish();
+
+    this.lastStats = null;
+  }
+
+  /**
+   * Carry the field across each interface in turn.
+   * @param {Object} model
+   * @private
+   */
+  runChainPasses({ subspaces, settings }) {
+    const gl = this.gl;
+    gl.useProgram(this.chainProgram);
+
+    for (let j = 1; j &lt; subspaces.length; j++) {
+      const tables = this.tablesFor(j);
+      if (tables.siteGeometry.count === 0) continue;
+
+      // Sum over the subspace before this interface, in its medium.
+      this.bindSources(
+        this.chainUniforms, j - 1, settings.wavelength, subspaces[j - 1].refractiveIndex
+      );
+
+      gl.activeTexture(gl.TEXTURE0 + UNIT_EXTRA_A);
+      gl.bindTexture(gl.TEXTURE_2D, tables.siteGeometry.texture);
+      gl.uniform1i(this.chainUniforms.uSiteGeometry, UNIT_EXTRA_A);
+      gl.activeTexture(gl.TEXTURE0 + UNIT_EXTRA_B);
+      gl.bindTexture(gl.TEXTURE_2D, tables.siteTransmission.texture);
+      gl.uniform1i(this.chainUniforms.uSiteTransmission, UNIT_EXTRA_B);
+
+      gl.bindFramebuffer(gl.FRAMEBUFFER, tables.siteWeights.framebuffer);
+      gl.viewport(0, 0, tables.siteWeights.width, tables.siteWeights.height);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
+  }
+
+  /**
+   * Draw each subspace's field into the shared float texture.
+   * @param {Object} model
+   * @private
+   */
+  runFieldPasses({ subspaces, interfaces, grid, settings }) {
+    const gl = this.gl;
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
+    gl.viewport(0, 0, grid.width, grid.height);
+    // Any pixel no subspace claims stays zero, which is the honest result for a
+    // scene whose interfaces cross and so have no consistent ordering.
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+
+    gl.useProgram(this.fieldProgram);
+    gl.uniform2f(this.fieldUniforms.uGridOrigin, grid.originX, grid.originY);
+    gl.uniform2f(this.fieldUniforms.uGridStep, grid.stepX, grid.stepY);
+    gl.uniform1f(this.fieldUniforms.uAxisSign, settings.axisSign ?? 1);
+
+    for (let j = 0; j &lt; subspaces.length; j++) {
+      this.bindSources(
+        this.fieldUniforms, j, settings.wavelength, subspaces[j].refractiveIndex
+      );
+      this.bindBoundary(UNIT_EXTRA_A, j - 1, interfaces, 'uLowerLut', 'uLowerRange', 'uHasLower');
+      this.bindBoundary(UNIT_EXTRA_B, j, interfaces, 'uUpperLut', 'uUpperRange', 'uHasUpper');
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
+  }
+
+  /**
+   * Bind one of the two interfaces bounding the subspace being drawn.
+   * @private
+   */
+  bindBoundary(unit, interfaceIndex, interfaces, lutName, rangeName, flagName) {
+    const gl = this.gl;
+    const present = interfaceIndex >= 0 &amp;&amp; interfaceIndex &lt; interfaces.length;
+    gl.uniform1i(this.fieldUniforms[flagName], present ? 1 : 0);
+
+    // A sampler must still be bound to something valid even when unused.
+    const lut = this.boundaryLutFor(Math.max(0, Math.min(
+      interfaceIndex, Math.max(0, interfaces.length - 1)
+    )));
+    gl.activeTexture(gl.TEXTURE0 + unit);
+    gl.bindTexture(gl.TEXTURE_2D, lut.texture);
+    gl.uniform1i(this.fieldUniforms[lutName], unit);
+    if (present) gl.uniform4fv(this.fieldUniforms[rangeName], lut.range);
+  }
+
+  /**
+   * Read the computed field back and summarise its amplitude distribution.
+   *
+   * The colour scale is taken from a high percentile rather than the maximum,
+   * because the maximum sits at the logarithmic singularity of the Green's
+   * function right at a source and would compress everything else to black.
+   *
+   * This is a GPU-to-CPU synchronisation point, so callers should do it only
+   * on the final full-resolution pass, not while the user is dragging.
+   *
+   * @param {number} percentile - Between 0 and 100.
+   * @returns {{referenceAmplitude: number, maxAmplitude: number, sampleCount: number}}
+   */
+  /**
+   * Bring the computed field back from the GPU.
+   *
+   * Four floats per sample, in the field pass's layout: real part, imaginary
+   * part, `|U|`, and a one. Rows run bottom to top, matching the grid built by
+   * {@link computeFieldGrid}.
+   *
+   * This is the only way anything outside the shaders can look at the field, so
+   * it is what the colour-scale statistics and the measurement objects both go
+   * through. It is also not cheap — a full framebuffer transfer that stalls the
+   * pipeline — so it is done once per change rather than per frame.
+   *
+   * @returns {Float32Array|null}
+   */
+  readField() {
+    const gl = this.gl;
+    const count = this.fieldWidth * this.fieldHeight;
+    if (count === 0) return null;
+
+    if (!this.readbackBuffer || this.readbackBuffer.length &lt; count * 4) {
+      this.readbackBuffer = new Float32Array(count * 4);
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
+    gl.readPixels(
+      0, 0, this.fieldWidth, this.fieldHeight, gl.RGBA, gl.FLOAT, this.readbackBuffer
+    );
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return this.readbackBuffer;
+  }
+
+  readFieldStats(percentile = 99) {
+    const count = this.fieldWidth * this.fieldHeight;
+    if (count === 0) {
+      return { referenceAmplitude: 0, maxAmplitude: 0, sampleCount: 0 };
+    }
+
+    this.readField();
+
+    const amplitudes = new Float32Array(count);
+    let maxAmplitude = 0;
+    for (let i = 0; i &lt; count; i++) {
+      // Channel 2 is |U|, written by the field pass.
+      const amplitude = this.readbackBuffer[i * 4 + 2];
+      amplitudes[i] = amplitude;
+      if (amplitude > maxAmplitude) maxAmplitude = amplitude;
+    }
+
+    amplitudes.sort();
+    const index = Math.min(
+      count - 1, Math.max(0, Math.round((percentile / 100) * (count - 1)))
+    );
+
+    this.lastStats = {
+      referenceAmplitude: amplitudes[index] || maxAmplitude,
+      maxAmplitude,
+      sampleCount: count,
+    };
+    return this.lastStats;
+  }
+
+  /**
+   * Colour the cached field onto the canvas.
+   *
+   * @param {Object} options
+   * @param {string} options.view - 'intensity', 'field' or 'amplitudePhase'.
+   * @param {string} options.colormap - Colormap identifier; unused by the
+   *   amplitude-phase view, which has its own fixed bivariate mapping.
+   * @param {number} options.referenceAmplitude - Amplitude the scale saturates at.
+   * @param {number} [options.upperCutoff=1] - Multiplies the reference amplitude.
+   * @param {number} [options.lowerCutoff=0] - Intensity floor, as a fraction of full scale.
+   * @param {number} [options.phase=0] - The quantity `w t`.
+   * @param {boolean} [options.logScale=false]
+   * @param {number} [options.dynamicRange=40] - Decibels shown when `logScale` is set.
+   * @param {number} [options.chroma] - Peak chroma of the amplitude-phase view.
+   */
+  render({
+    view, colormap, referenceAmplitude, upperCutoff = 1, lowerCutoff = 0,
+    phase = 0, logScale = false, dynamicRange = 40, chroma = DEFAULT_PHASE_CHROMA,
+  }) {
+    const gl = this.gl;
+    const canvas = gl.canvas;
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.disable(gl.BLEND);
+    gl.disable(gl.DEPTH_TEST);
+
+    gl.useProgram(this.displayProgram);
+    gl.bindVertexArray(this.vertexArray);
+
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.fieldTexture);
+    gl.uniform1i(this.displayUniforms.uField, 0);
+
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.getColormapTexture(colormap));
+    gl.uniform1i(this.displayUniforms.uColormap, 1);
+
+    const viewIndex = view === 'field' ? 1 : (view === 'amplitudePhase' ? 2 : 0);
+    gl.uniform2f(this.displayUniforms.uResolution, canvas.width, canvas.height);
+    gl.uniform1i(this.displayUniforms.uView, viewIndex);
+    gl.uniform1f(this.displayUniforms.uChroma, chroma);
+    gl.uniform1f(this.displayUniforms.uScale, referenceAmplitude * upperCutoff);
+    gl.uniform1f(this.displayUniforms.uLowerCutoff, lowerCutoff);
+    gl.uniform1f(this.displayUniforms.uPhase, phase);
+    gl.uniform1i(this.displayUniforms.uLogScale, logScale ? 1 : 0);
+    gl.uniform1f(this.displayUniforms.uDynamicRange, dynamicRange);
+
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.bindVertexArray(null);
+  }
+
+  /** Clear the canvas without drawing a field. */
+  clear() {
+    const gl = this.gl;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+  }
+
+  /**
+   * The colormap lookup texture, uploaded on first use and then cached.
+   * @param {string} name
+   * @returns {WebGLTexture}
+   * @private
+   */
+  getColormapTexture(name) {
+    let texture = this.colormapTextures.get(name);
+    if (texture) return texture;
+
+    const gl = this.gl;
+    texture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texImage2D(
+      gl.TEXTURE_2D, 0, gl.RGBA, COLORMAP_SIZE, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+      getColormapTableRGBA(name)
+    );
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    this.colormapTextures.set(name, texture);
+    return texture;
+  }
+
+  /** Release every GL object this engine owns. */
+  destroy() {
+    const gl = this.gl;
+    gl.deleteProgram(this.chainProgram);
+    gl.deleteProgram(this.fieldProgram);
+    gl.deleteProgram(this.displayProgram);
+    gl.deleteTexture(this.fieldTexture);
+    gl.deleteFramebuffer(this.framebuffer);
+    gl.deleteVertexArray(this.vertexArray);
+    for (const tables of this.subspaceTables) {
+      for (const table of Object.values(tables)) table.destroy();
+    }
+    this.subspaceTables = [];
+    for (const lut of this.boundaryLuts) lut.destroy();
+    this.boundaryLuts = [];
+    for (const texture of this.colormapTextures.values()) gl.deleteTexture(texture);
+    this.colormapTextures.clear();
+  }
+}
+
+export default WaveFieldEngineWebGL2;
+</code></pre>
+        </article>
+    </section>
+
+
+
+
+</div>
+
+<nav>
+    <h2><a href="index.html">Home</a></h2><h3>Modules</h3><ul><li><a href="module-App.html">App</a></li><li><a href="module-CanvasContainer.html">CanvasContainer</a></li><li><a href="module-ColorModeModal.html">ColorModeModal</a></li><li><a href="module-ColorPicker.html">ColorPicker</a></li><li><a href="module-DashPicker.html">DashPicker</a></li><li><a href="module-FileBar.html">FileBar</a></li><li><a href="module-FillControl.html">FillControl</a></li><li><a href="module-FontPicker.html">FontPicker</a></li><li><a href="module-Footer.html">Footer</a></li><li><a href="module-ImportShapesModal.html">ImportShapesModal</a></li><li><a href="module-LanguageModal.html">LanguageModal</a></li><li><a href="module-LayoutAidsBar.html">LayoutAidsBar</a></li><li><a href="module-ModuleModal.html">ModuleModal</a></li><li><a href="module-ModuleTools.html">ModuleTools</a></li><li><a href="module-MoreToolsCollapsible.html">MoreToolsCollapsible</a></li><li><a href="module-NumberControl.html">NumberControl</a></li><li><a href="module-ObjBar.html">ObjBar</a></li><li><a href="module-PointControl.html">PointControl</a></li><li><a href="module-PopupSelectControl.html">PopupSelectControl</a></li><li><a href="module-RayDensityBar.html">RayDensityBar</a></li><li><a href="module-SaveModal.html">SaveModal</a></li><li><a href="module-SettingsBar.html">SettingsBar</a></li><li><a href="module-SettingsList.html">SettingsList</a></li><li><a href="module-SettingsWarning.html">SettingsWarning</a></li><li><a href="module-Sidebar.html">Sidebar</a></li><li><a href="module-SimulationEngineModal.html">SimulationEngineModal</a></li><li><a href="module-SimulatorControls.html">SimulatorControls</a></li><li><a href="module-SizePicker.html">SizePicker</a></li><li><a href="module-StatusArea.html">StatusArea</a></li><li><a href="module-StrokeControl.html">StrokeControl</a></li><li><a href="module-TaskTab.html">TaskTab</a></li><li><a href="module-TextControl.html">TextControl</a></li><li><a href="module-TextInput.html">TextInput</a></li><li><a href="module-ThemeModal.html">ThemeModal</a></li><li><a href="module-ThemeOptionsList.html">ThemeOptionsList</a></li><li><a href="module-ToggleControl.html">ToggleControl</a></li><li><a href="module-ToolItem.html">ToolItem</a></li><li><a href="module-Toolbar.html">Toolbar</a></li><li><a href="module-ToolsBar.html">ToolsBar</a></li><li><a href="module-ToolsCategory.html">ToolsCategory</a></li><li><a href="module-ToolsList.html">ToolsList</a></li><li><a href="module-ViewBar.html">ViewBar</a></li><li><a href="module-VirtualKeyboard.html">VirtualKeyboard</a></li><li><a href="module-WelcomeMessage.html">WelcomeMessage</a></li><li><a href="module-ZoomControl.html">ZoomControl</a></li><li><a href="module-app_.html">app</a></li><li><a href="module-shapeImport.html">shapeImport</a></li><li><a href="module-svgImport.html">svgImport</a></li></ul><h3>Namespaces</h3><ul><li><a href="geometry.html">geometry</a></li><li><a href="sceneObjs.html">sceneObjs</a></li></ul><h3>Classes</h3><ul><li><a href="AdaptiveResolution.html">AdaptiveResolution</a></li><li><a href="BaseFilter.html">BaseFilter</a></li><li><a href="BaseGlass.html">BaseGlass</a></li><li><a href="BaseGrinGlass.html">BaseGrinGlass</a></li><li><a href="BaseSceneObj.html">BaseSceneObj</a></li><li><a href="BoundaryLut.html">BoundaryLut</a></li><li><a href="CanvasRenderer.html">CanvasRenderer</a></li><li><a href="CpuSimulationEngine.html">CpuSimulationEngine</a></li><li><a href="DegenerateCurveError.html">DegenerateCurveError</a></li><li><a href="Editor.html">Editor</a></li><li><a href="FloatColorRenderer.html">FloatColorRenderer</a></li><li><a href="FloatTable.html">FloatTable</a></li><li><a href="JsonEditorService.html">JsonEditorService</a></li><li><a href="Mouse.html">Mouse</a></li><li><a href="ObjBar.html">ObjBar</a></li><li><a href="PrimitiveBasedSimulator.html">PrimitiveBasedSimulator</a></li><li><a href="Scene.html">Scene</a></li><li><a href="Simulator.html">Simulator</a></li><li><a href="TaskEvaluator.html">TaskEvaluator</a></li><li><a href="TexExprParser.html">TexExprParser</a></li><li><a href="WaveFieldEngineWebGL2.html">WaveFieldEngineWebGL2</a></li><li><a href="WaveRuler.html">WaveRuler</a></li><li><a href="WaveSimulator.html">WaveSimulator</a></li><li><a href="WebGpuCanvasRayRasterizer.html">WebGpuCanvasRayRasterizer</a></li><li><a href="WebGpuInitialMembershipStage.html">WebGpuInitialMembershipStage</a></li><li><a href="WebGpuMegakernelStaticSceneStorage.html">WebGpuMegakernelStaticSceneStorage</a></li><li><a href="WebGpuReadyRayRenderer.html">WebGpuReadyRayRenderer</a></li><li><a href="WebGpuSimulationEngine.html">WebGpuSimulationEngine</a></li><li><a href="WebGpuSimulationRun.html">WebGpuSimulationRun</a></li><li><a href="sceneObjs.AngleSource.html">AngleSource</a></li><li><a href="sceneObjs.Aperture.html">Aperture</a></li><li><a href="sceneObjs.ArcMirror.html">ArcMirror</a></li><li><a href="sceneObjs.BaseCustomSurface.html">BaseCustomSurface</a></li><li><a href="sceneObjs.Beam.html">Beam</a></li><li><a href="sceneObjs.BeamSplitter.html">BeamSplitter</a></li><li><a href="sceneObjs.Blocker.html">Blocker</a></li><li><a href="sceneObjs.CircleBlocker.html">CircleBlocker</a></li><li><a href="sceneObjs.CircleGlass.html">CircleGlass</a></li><li><a href="sceneObjs.CircleGrinGlass.html">CircleGrinGlass</a></li><li><a href="sceneObjs.ConcaveDiffractionGrating.html">ConcaveDiffractionGrating</a></li><li><a href="sceneObjs.CropBox.html">CropBox</a></li><li><a href="sceneObjs.CurveGlass.html">CurveGlass</a></li><li><a href="sceneObjs.CurveGrinGlass.html">CurveGrinGlass</a></li><li><a href="sceneObjs.CurveMirror.html">CurveMirror</a></li><li><a href="sceneObjs.CustomArcSurface.html">CustomArcSurface</a></li><li><a href="sceneObjs.CustomCurveSurface.html">CustomCurveSurface</a></li><li><a href="sceneObjs.CustomGlass.html">CustomGlass</a></li><li><a href="sceneObjs.CustomMirror.html">CustomMirror</a></li><li><a href="sceneObjs.CustomParamSurface.html">CustomParamSurface</a></li><li><a href="sceneObjs.CustomSurface.html">CustomSurface</a></li><li><a href="sceneObjs.Detector.html">Detector</a></li><li><a href="sceneObjs.DiffractionGrating.html">DiffractionGrating</a></li><li><a href="sceneObjs.Drawing.html">Drawing</a></li><li><a href="sceneObjs.Glass.html">Glass</a></li><li><a href="sceneObjs.GrinGlass.html">GrinGlass</a></li><li><a href="sceneObjs.Handle.html">Handle</a></li><li><a href="sceneObjs.IdealLens.html">IdealLens</a></li><li><a href="sceneObjs.IdealMirror.html">IdealMirror</a></li><li><a href="sceneObjs.LineArrow.html">LineArrow</a></li><li><a href="sceneObjs.Mirror.html">Mirror</a></li><li><a href="sceneObjs.ModuleObj.html">ModuleObj</a></li><li><a href="sceneObjs.ParabolicMirror.html">ParabolicMirror</a></li><li><a href="sceneObjs.ParamGlass.html">ParamGlass</a></li><li><a href="sceneObjs.ParamGrinGlass.html">ParamGrinGlass</a></li><li><a href="sceneObjs.ParamMirror.html">ParamMirror</a></li><li><a href="sceneObjs.PlaneGlass.html">PlaneGlass</a></li><li><a href="sceneObjs.PointSource.html">PointSource</a></li><li><a href="sceneObjs.Protractor.html">Protractor</a></li><li><a href="sceneObjs.Ruler.html">Ruler</a></li><li><a href="sceneObjs.SingleRay.html">SingleRay</a></li><li><a href="sceneObjs.SphericalLens.html">SphericalLens</a></li><li><a href="sceneObjs.TextLabel.html">TextLabel</a></li><li><a href="sceneObjs.WaveBinaryMask.html">WaveBinaryMask</a></li><li><a href="sceneObjs.WaveFocusProbe.html">WaveFocusProbe</a></li><li><a href="sceneObjs.WaveInterface.html">WaveInterface</a></li><li><a href="sceneObjs.WaveLens.html">WaveLens</a></li><li><a href="sceneObjs.WaveLensSurface.html">WaveLensSurface</a></li><li><a href="sceneObjs.WaveLineSource.html">WaveLineSource</a></li><li><a href="sceneObjs.WaveMultiSlit.html">WaveMultiSlit</a></li><li><a href="sceneObjs.WavePlaneWave.html">WavePlaneWave</a></li><li><a href="sceneObjs.WavePointSource.html">WavePointSource</a></li><li><a href="sceneObjs.WaveScreen.html">WaveScreen</a></li><li><a href="sceneObjs.WaveSinusoidalGrating.html">WaveSinusoidalGrating</a></li><li><a href="sceneObjs.WaveSquareGrating.html">WaveSquareGrating</a></li><li><a href="sceneObjs.WaveZonePlate.html">WaveZonePlate</a></li></ul><h3>Events</h3><ul><li><a href="Editor.html#event:handleCreationHint">handleCreationHint</a></li><li><a href="Editor.html#event:mouseCoordinateChange">mouseCoordinateChange</a></li><li><a href="Editor.html#event:newAction">newAction</a></li><li><a href="Editor.html#event:newUndoPoint">newUndoPoint</a></li><li><a href="Editor.html#event:objectBodyClick">objectBodyClick</a></li><li><a href="Editor.html#event:positioningEnd">positioningEnd</a></li><li><a href="Editor.html#event:positioningStart">positioningStart</a></li><li><a href="Editor.html#event:redo">redo</a></li><li><a href="Editor.html#event:requestPositioningComfirm">requestPositioningComfirm</a></li><li><a href="Editor.html#event:scaleChange">scaleChange</a></li><li><a href="Editor.html#event:sceneLoaded">sceneLoaded</a></li><li><a href="Editor.html#event:selectionChange">selectionChange</a></li><li><a href="Editor.html#event:undo">undo</a></li><li><a href="ObjBar.html#event:edit">edit</a></li><li><a href="ObjBar.html#event:editEnd">editEnd</a></li><li><a href="ObjBar.html#event:requestUpdate">requestUpdate</a></li><li><a href="ObjBar.html#event:showAdvancedEnabled">showAdvancedEnabled</a></li><li><a href="Simulator.html#event:lightLayerSyncChange">lightLayerSyncChange</a></li><li><a href="Simulator.html#event:simulationComplete">simulationComplete</a></li><li><a href="Simulator.html#event:simulationPause">simulationPause</a></li><li><a href="Simulator.html#event:simulationStart">simulationStart</a></li><li><a href="Simulator.html#event:simulationStop">simulationStop</a></li><li><a href="Simulator.html#event:update">update</a></li><li><a href="global.html#event:deviceChange">deviceChange</a></li><li><a href="global.html#event:requestUpdateErrorAndWarning">requestUpdateErrorAndWarning</a></li><li><a href="global.html#event:webglContextLost">webglContextLost</a></li></ul><h3>Global</h3><ul><li><a href="global.html#BACKTICK_HIGHLIGHT_MATCH_CLASS">BACKTICK_HIGHLIGHT_MATCH_CLASS</a></li><li><a href="global.html#BOUNDARY_LUT_WIDTH">BOUNDARY_LUT_WIDTH</a></li><li><a href="global.html#CATEGORY_FALLBACKS">CATEGORY_FALLBACKS</a></li><li><a href="global.html#COLORMAP_DATA">COLORMAP_DATA</a></li><li><a href="global.html#COLORMAP_SIZE">COLORMAP_SIZE</a></li><li><a href="global.html#COMFORTABLE_PIXELS_PER_WAVELENGTH">COMFORTABLE_PIXELS_PER_WAVELENGTH</a></li><li><a href="global.html#COMFORTABLE_PIXELS_PER_WAVELENGTH_PHASE">COMFORTABLE_PIXELS_PER_WAVELENGTH_PHASE</a></li><li><a href="global.html#COMFORTABLE_SAMPLES_PER_WAVELENGTH">COMFORTABLE_SAMPLES_PER_WAVELENGTH</a></li><li><a href="global.html#COMMON_GOAL_KEYS">COMMON_GOAL_KEYS</a></li><li><a href="global.html#CircleObjMixin">CircleObjMixin</a></li><li><a href="global.html#CurveObjMixin">CurveObjMixin</a></li><li><a href="global.html#DATA_VERSION">DATA_VERSION</a></li><li><a href="global.html#DEFAULT_FIELD_COLORMAP">DEFAULT_FIELD_COLORMAP</a></li><li><a href="global.html#DEFAULT_GRID_RESOLUTION">DEFAULT_GRID_RESOLUTION</a></li><li><a href="global.html#DEFAULT_INTENSITY_COLORMAP">DEFAULT_INTENSITY_COLORMAP</a></li><li><a href="global.html#DEFAULT_PHASE_CHROMA">DEFAULT_PHASE_CHROMA</a></li><li><a href="global.html#DEFAULT_PLOT_HEIGHT">DEFAULT_PLOT_HEIGHT</a></li><li><a href="global.html#DEFAULT_REFRACTIVE_INDEX">DEFAULT_REFRACTIVE_INDEX</a></li><li><a href="global.html#DEFAULT_SAMPLE_COUNT">DEFAULT_SAMPLE_COUNT</a></li><li><a href="global.html#DEFAULT_SIMULATION_ENGINE_CONFIGS">DEFAULT_SIMULATION_ENGINE_CONFIGS</a></li><li><a href="global.html#DEFAULT_SOURCE_COUNT">DEFAULT_SOURCE_COUNT</a></li><li><a href="global.html#DEFAULT_SOURCE_DENSITY">DEFAULT_SOURCE_DENSITY</a></li><li><a href="global.html#DEFAULT_WAVELENGTH">DEFAULT_WAVELENGTH</a></li><li><a href="global.html#DIRECTION_HANDLE_DISTANCE">DIRECTION_HANDLE_DISTANCE</a></li><li><a href="global.html#F0_LARGE">F0_LARGE</a></li><li><a href="global.html#F1_LARGE">F1_LARGE</a></li><li><a href="global.html#FAR_FIELD_FRESNEL_MARGIN">FAR_FIELD_FRESNEL_MARGIN</a></li><li><a href="global.html#FEATURE_SCAN_SAMPLES">FEATURE_SCAN_SAMPLES</a></li><li><a href="global.html#FIELD_VIEWS">FIELD_VIEWS</a></li><li><a href="global.html#FINEST_USEFUL_FEATURE_IN_WAVELENGTHS">FINEST_USEFUL_FEATURE_IN_WAVELENGTHS</a></li><li><a href="global.html#FLOAT32_EPSILON">FLOAT32_EPSILON</a></li><li><a href="global.html#FN1">FN1</a></li><li><a href="global.html#FOCAL_CROSS_SIZE">FOCAL_CROSS_SIZE</a></li><li><a href="global.html#FOCAL_GUIDE_LENGTH">FOCAL_GUIDE_LENGTH</a></li><li><a href="global.html#FORMULA_MODULE_TOOLTIP_MAX_LINES">FORMULA_MODULE_TOOLTIP_MAX_LINES</a></li><li><a href="global.html#FOR_IF_DEFAULTS">FOR_IF_DEFAULTS</a></li><li><a href="global.html#FocalLengthHandleMixin">FocalLengthHandleMixin</a></li><li><a href="global.html#GAMUT_SEARCH_ITERATIONS">GAMUT_SEARCH_ITERATIONS</a></li><li><a href="global.html#GOAL_TYPES">GOAL_TYPES</a></li><li><a href="global.html#GREEK_SYMBOL">GREEK_SYMBOL</a></li><li><a href="global.html#GUIDE_COLOR">GUIDE_COLOR</a></li><li><a href="global.html#HANDLE_COLOR">HANDLE_COLOR</a></li><li><a href="global.html#HANDLE_GRAB_RADIUS">HANDLE_GRAB_RADIUS</a></li><li><a href="global.html#HANDLE_OUTLINE">HANDLE_OUTLINE</a></li><li><a href="global.html#HANKEL_BRANCH_X">HANKEL_BRANCH_X</a></li><li><a href="global.html#HEADROOM">HEADROOM</a></li><li><a href="global.html#ILLUSTRATION_PICTURES">ILLUSTRATION_PICTURES</a></li><li><a href="global.html#INTERACTION_WINDOW_MS">INTERACTION_WINDOW_MS</a></li><li><a href="global.html#INTERACTIVE_BUDGET_MS">INTERACTIVE_BUDGET_MS</a></li><li><a href="global.html#J0_SMALL">J0_SMALL</a></li><li><a href="global.html#J1_SMALL">J1_SMALL</a></li><li><a href="global.html#JSON_INNER_COLLAPSE_THRESHOLD">JSON_INNER_COLLAPSE_THRESHOLD</a></li><li><a href="global.html#LINEAR_SRGB_FROM_LMS">LINEAR_SRGB_FROM_LMS</a></li><li><a href="global.html#LITERAL_NUMERIC_TOKEN">LITERAL_NUMERIC_TOKEN</a></li><li><a href="global.html#LMS_FROM_LINEAR_SRGB">LMS_FROM_LINEAR_SRGB</a></li><li><a href="global.html#LMS_FROM_OKLAB">LMS_FROM_OKLAB</a></li><li><a href="global.html#LineObjMixin">LineObjMixin</a></li><li><a href="global.html#MAX_ANGLE">MAX_ANGLE</a></li><li><a href="global.html#MAX_RELIABLE_PHASE">MAX_RELIABLE_PHASE</a></li><li><a href="global.html#MAX_SOURCES">MAX_SOURCES</a></li><li><a href="global.html#MAX_SUBSAMPLES">MAX_SUBSAMPLES</a></li><li><a href="global.html#MAX_SURFACE_SAMPLES">MAX_SURFACE_SAMPLES</a></li><li><a href="global.html#MAX_WORKLOAD_GROWTH">MAX_WORKLOAD_GROWTH</a></li><li><a href="global.html#MEASURE_COLOR">MEASURE_COLOR</a></li><li><a href="global.html#MEASURE_OUTLINE">MEASURE_OUTLINE</a></li><li><a href="global.html#MIN_FOCAL_LENGTH">MIN_FOCAL_LENGTH</a></li><li><a href="global.html#MIN_INTERACTIVE_RESOLUTION">MIN_INTERACTIVE_RESOLUTION</a></li><li><a href="global.html#MIN_PITCH">MIN_PITCH</a></li><li><a href="global.html#MIN_PIXELS_PER_WAVELENGTH">MIN_PIXELS_PER_WAVELENGTH</a></li><li><a href="global.html#MIN_RADIUS_IN_WAVELENGTHS">MIN_RADIUS_IN_WAVELENGTHS</a></li><li><a href="global.html#MIN_RESOLVED_SAMPLES">MIN_RESOLVED_SAMPLES</a></li><li><a href="global.html#MIN_SAMPLES_PER_WAVELENGTH">MIN_SAMPLES_PER_WAVELENGTH</a></li><li><a href="global.html#MIN_SAMPLE_COUNT">MIN_SAMPLE_COUNT</a></li><li><a href="global.html#MIN_SLIT_DIMENSION">MIN_SLIT_DIMENSION</a></li><li><a href="global.html#MIN_THICKNESS">MIN_THICKNESS</a></li><li><a href="global.html#MODULE_EDITOR_LIST">MODULE_EDITOR_LIST</a></li><li><a href="global.html#NO_FIELD">NO_FIELD</a></li><li><a href="global.html#OBJECT_INTERACTION_DEFAULTS">OBJECT_INTERACTION_DEFAULTS</a></li><li><a href="global.html#OKLAB_FROM_LMS">OKLAB_FROM_LMS</a></li><li><a href="global.html#OVERRUN_SAFETY_MARGIN">OVERRUN_SAFETY_MARGIN</a></li><li><a href="global.html#PARAM_CURVE_POINT_TOLERANCE">PARAM_CURVE_POINT_TOLERANCE</a></li><li><a href="global.html#PAREN_HIGHLIGHT_MATCH_CLASS">PAREN_HIGHLIGHT_MATCH_CLASS</a></li><li><a href="global.html#PRIMITIVE_CURVE_REFERENCE_PREFIX">PRIMITIVE_CURVE_REFERENCE_PREFIX</a></li><li><a href="global.html#PROFILE_CHROMA">PROFILE_CHROMA</a></li><li><a href="global.html#PROFILE_DISPLAYS">PROFILE_DISPLAYS</a></li><li><a href="global.html#PROFILE_DRAW_SAMPLES">PROFILE_DRAW_SAMPLES</a></li><li><a href="global.html#PROFILE_LINE_WIDTH">PROFILE_LINE_WIDTH</a></li><li><a href="global.html#PROFILE_MAX_LIGHTNESS">PROFILE_MAX_LIGHTNESS</a></li><li><a href="global.html#ParamCurveObjMixin">ParamCurveObjMixin</a></li><li><a href="global.html#REFINE_DELAY_MS">REFINE_DELAY_MS</a></li><li><a href="global.html#RESOLUTION_LADDER">RESOLUTION_LADDER</a></li><li><a href="global.html#SAMPLES_PER_FEATURE">SAMPLES_PER_FEATURE</a></li><li><a href="global.html#SCENE_INTERACTION_DEFAULTS">SCENE_INTERACTION_DEFAULTS</a></li><li><a href="global.html#SCENE_ONLY_INTERACTION_DEFAULTS">SCENE_ONLY_INTERACTION_DEFAULTS</a></li><li><a href="global.html#SETTLED_BUDGET_MS">SETTLED_BUDGET_MS</a></li><li><a href="global.html#SHADE_REFERENCE_ALPHA">SHADE_REFERENCE_ALPHA</a></li><li><a href="global.html#SHADE_REFERENCE_INDEX">SHADE_REFERENCE_INDEX</a></li><li><a href="global.html#SHARED_INTERFACE_DEFAULTS">SHARED_INTERFACE_DEFAULTS</a></li><li><a href="global.html#SLOPE_EPSILON">SLOPE_EPSILON</a></li><li><a href="global.html#SLOPE_SCAN_SAMPLES">SLOPE_SCAN_SAMPLES</a></li><li><a href="global.html#SOURCE_EXCLUSION_WAVELENGTHS">SOURCE_EXCLUSION_WAVELENGTHS</a></li><li><a href="global.html#SUBSAMPLES_PER_FEATURE">SUBSAMPLES_PER_FEATURE</a></li><li><a href="global.html#SUMMATION_GLSL">SUMMATION_GLSL</a></li><li><a href="global.html#T0_LARGE">T0_LARGE</a></li><li><a href="global.html#T1_LARGE">T1_LARGE</a></li><li><a href="global.html#TABLE_WIDTH">TABLE_WIDTH</a></li><li><a href="global.html#TASK_KEYS">TASK_KEYS</a></li><li><a href="global.html#TICK_COUNT">TICK_COUNT</a></li><li><a href="global.html#UI_DEFAULTS">UI_DEFAULTS</a></li><li><a href="global.html#UNIT_DIRECTIONAL_GEOMETRY">UNIT_DIRECTIONAL_GEOMETRY</a></li><li><a href="global.html#VIRTUAL_COLOR">VIRTUAL_COLOR</a></li><li><a href="global.html#WAVE_GOAL_TYPES">WAVE_GOAL_TYPES</a></li><li><a href="global.html#Y0_SMALL">Y0_SMALL</a></li><li><a href="global.html#Y1_SMALL">Y1_SMALL</a></li><li><a href="global.html#_applyPiecesJoinedWarning">_applyPiecesJoinedWarning</a></li><li><a href="global.html#_ensureCubicBezierPathReady">_ensureCubicBezierPathReady</a></li><li><a href="global.html#_pathPairToHermiteBezier">_pathPairToHermiteBezier</a></li><li><a href="global.html#allocateInteractionIndexBuffers">allocateInteractionIndexBuffers</a></li><li><a href="global.html#amplitudeExamples">amplitudeExamples</a></li><li><a href="global.html#amplitudePhaseColor">amplitudePhaseColor</a></li><li><a href="global.html#appendPartialDerivatives">appendPartialDerivatives</a></li><li><a href="global.html#applyTextareaAutoResize">applyTextareaAutoResize</a></li><li><a href="global.html#arcCrossings">arcCrossings</a></li><li><a href="global.html#arePiecesJoined">arePiecesJoined</a></li><li><a href="global.html#besselJ0">besselJ0</a></li><li><a href="global.html#besselJ1">besselJ1</a></li><li><a href="global.html#besselY0">besselY0</a></li><li><a href="global.html#besselY1">besselY1</a></li><li><a href="global.html#boundaryRows">boundaryRows</a></li><li><a href="global.html#buildBacktickHighlightHtml">buildBacktickHighlightHtml</a></li><li><a href="global.html#buildBvh">buildBvh</a></li><li><a href="global.html#buildHankelGlsl">buildHankelGlsl</a></li><li><a href="global.html#buildModuleInstanceTooltipHtml">buildModuleInstanceTooltipHtml</a></li><li><a href="global.html#buildOklchGlsl">buildOklchGlsl</a></li><li><a href="global.html#buildParenHighlightHtml">buildParenHighlightHtml</a></li><li><a href="global.html#buildSubspaceStack">buildSubspaceStack</a></li><li><a href="global.html#buildWaveModel">buildWaveModel</a></li><li><a href="global.html#checkRayIntersectsShape">checkRayIntersectsShape</a></li><li><a href="global.html#clampWebGpuParameterToF32">clampWebGpuParameterToF32</a></li><li><a href="global.html#closenessScore">closenessScore</a></li><li><a href="global.html#collapseBinaryBvh">collapseBinaryBvh</a></li><li><a href="global.html#collapseRedundantNestedParentheses">collapseRedundantNestedParentheses</a></li><li><a href="global.html#collectInterfaces">collectInterfaces</a></li><li><a href="global.html#collectPointPaths">collectPointPaths</a></li><li><a href="global.html#collectRayPowerQueue">collectRayPowerQueue</a></li><li><a href="global.html#collectReferencedParameterNames">collectReferencedParameterNames</a></li><li><a href="global.html#collectUniforms">collectUniforms</a></li><li><a href="global.html#collectWaveSources">collectWaveSources</a></li><li><a href="global.html#collimated">collimated</a></li><li><a href="global.html#colormapCssGradient">colormapCssGradient</a></li><li><a href="global.html#colormapDisplayName">colormapDisplayName</a></li><li><a href="global.html#combineDags">combineDags</a></li><li><a href="global.html#comfortablePixelsPerWavelength">comfortablePixelsPerWavelength</a></li><li><a href="global.html#compileParametricDerivative">compileParametricDerivative</a></li><li><a href="global.html#compileShader">compileShader</a></li><li><a href="global.html#computeFieldAt">computeFieldAt</a></li><li><a href="global.html#computeFieldGrid">computeFieldGrid</a></li><li><a href="global.html#computeModelFieldAt">computeModelFieldAt</a></li><li><a href="global.html#controlPointIndexAfterReorder">controlPointIndexAfterReorder</a></li><li><a href="global.html#countCurveRayCrossings">countCurveRayCrossings</a></li><li><a href="global.html#countIntersections">countIntersections</a></li><li><a href="global.html#countWaveSources">countWaveSources</a></li><li><a href="global.html#countingProgress">countingProgress</a></li><li><a href="global.html#createArcOrLineCurve">createArcOrLineCurve</a></li><li><a href="global.html#createCpuDetectorResults">createCpuDetectorResults</a></li><li><a href="global.html#createCustomSurfacePrimitive">createCustomSurfacePrimitive</a></li><li><a href="global.html#createDagClosureEvaluator">createDagClosureEvaluator</a></li><li><a href="global.html#createDagEvaluator">createDagEvaluator</a></li><li><a href="global.html#createDagWgslSpecialization">createDagWgslSpecialization</a></li><li><a href="global.html#createInteractionCandidate">createInteractionCandidate</a></li><li><a href="global.html#createInteractionCandidateContext">createInteractionCandidateContext</a></li><li><a href="global.html#createInteractionIndexBuffers">createInteractionIndexBuffers</a></li><li><a href="global.html#createInteractionTypeLayout">createInteractionTypeLayout</a></li><li><a href="global.html#createMegakernelCollectorShader">createMegakernelCollectorShader</a></li><li><a href="global.html#createMegakernelInitialShader">createMegakernelInitialShader</a></li><li><a href="global.html#createMegakernelQueueLayout">createMegakernelQueueLayout</a></li><li><a href="global.html#createRegionMembershipResult">createRegionMembershipResult</a></li><li><a href="global.html#createSampledPrimitiveCurveEntries">createSampledPrimitiveCurveEntries</a></li><li><a href="global.html#createWaveRenderingContext">createWaveRenderingContext</a></li><li><a href="global.html#createWebGpuDagPrograms">createWebGpuDagPrograms</a></li><li><a href="global.html#createWebGpuExecutionPlan">createWebGpuExecutionPlan</a></li><li><a href="global.html#createWebGpuMegakernelShader">createWebGpuMegakernelShader</a></li><li><a href="global.html#createWebGpuRawTraceShader">createWebGpuRawTraceShader</a></li><li><a href="global.html#createWebGpuTraceSceneData">createWebGpuTraceSceneData</a></li><li><a href="global.html#createWebGpuTraceSceneDeclaration">createWebGpuTraceSceneDeclaration</a></li><li><a href="global.html#currentModel">currentModel</a></li><li><a href="global.html#decodeHex">decodeHex</a></li><li><a href="global.html#deepEqual">deepEqual</a></li><li><a href="global.html#defaultGoalTitle">defaultGoalTitle</a></li><li><a href="global.html#deriveWebGpuWavelengthRange">deriveWebGpuWavelengthRange</a></li><li><a href="global.html#detectorPower">detectorPower</a></li><li><a href="global.html#distancePointToSegment">distancePointToSegment</a></li><li><a href="global.html#distanceSquaredToSegment">distanceSquaredToSegment</a></li><li><a href="global.html#distanceToLine">distanceToLine</a></li><li><a href="global.html#draftsToCommittedValue">draftsToCommittedValue</a></li><li><a href="global.html#drawConstruction">drawConstruction</a></li><li><a href="global.html#drawControlHandles">drawControlHandles</a></li><li><a href="global.html#drawCross">drawCross</a></li><li><a href="global.html#drawFocalHandles">drawFocalHandles</a></li><li><a href="global.html#drawFocalMarks">drawFocalMarks</a></li><li><a href="global.html#drawFocalPoints">drawFocalPoints</a></li><li><a href="global.html#drawGuide">drawGuide</a></li><li><a href="global.html#drawHandle">drawHandle</a></li><li><a href="global.html#drawHandleLabel">drawHandleLabel</a></li><li><a href="global.html#drawLabel">drawLabel</a></li><li><a href="global.html#drawLensShape">drawLensShape</a></li><li><a href="global.html#drawOpticalAxis">drawOpticalAxis</a></li><li><a href="global.html#drawOpticalDecorations">drawOpticalDecorations</a></li><li><a href="global.html#drawPath">drawPath</a></li><li><a href="global.html#drawPreparedCurve">drawPreparedCurve</a></li><li><a href="global.html#drawPreparedRegion">drawPreparedRegion</a></li><li><a href="global.html#emittedRayCount">emittedRayCount</a></li><li><a href="global.html#ensureCurveIntersectionNormal">ensureCurveIntersectionNormal</a></li><li><a href="global.html#equationDisplayToValue">equationDisplayToValue</a></li><li><a href="global.html#equationInfo">equationInfo</a></li><li><a href="global.html#equationValueForListDisplay">equationValueForListDisplay</a></li><li><a href="global.html#equationValueToDisplay">equationValueToDisplay</a></li><li><a href="global.html#estimateAmbiguousRayWarningPowerThreshold">estimateAmbiguousRayWarningPowerThreshold</a></li><li><a href="global.html#estimateDagRanges">estimateDagRanges</a></li><li><a href="global.html#estimateWebGpuParameterRanges">estimateWebGpuParameterRanges</a></li><li><a href="global.html#evaluatePreparedCurve">evaluatePreparedCurve</a></li><li><a href="global.html#exampleList">exampleList</a></li><li><a href="global.html#extractNonDefaults">extractNonDefaults</a></li><li><a href="global.html#extractNumbersAsParameters">extractNumbersAsParameters</a></li><li><a href="global.html#fieldAmplitudes">fieldAmplitudes</a></li><li><a href="global.html#fieldAt">fieldAt</a></li><li><a href="global.html#fieldGrid">fieldGrid</a></li><li><a href="global.html#fieldSerial">fieldSerial</a></li><li><a href="global.html#finalizeInteractionCandidate">finalizeInteractionCandidate</a></li><li><a href="global.html#findMatchingBraceEnd">findMatchingBraceEnd</a></li><li><a href="global.html#findMatchingParenPair">findMatchingParenPair</a></li><li><a href="global.html#findMathBlockRanges">findMathBlockRanges</a></li><li><a href="global.html#findPeaks">findPeaks</a></li><li><a href="global.html#findPrimitiveCurveReferenceSpans">findPrimitiveCurveReferenceSpans</a></li><li><a href="global.html#findUnjoinedPieces">findUnjoinedPieces</a></li><li><a href="global.html#findValidJsonObjectSpans">findValidJsonObjectSpans</a></li><li><a href="global.html#focalHandleAt">focalHandleAt</a></li><li><a href="global.html#focalPoints">focalPoints</a></li><li><a href="global.html#formatKeyPath">formatKeyPath</a></li><li><a href="global.html#formatLength">formatLength</a></li><li><a href="global.html#formatPrimitiveCurveReference">formatPrimitiveCurveReference</a></li><li><a href="global.html#formatStatusLineHtml">formatStatusLineHtml</a></li><li><a href="global.html#formatTooltipNumber">formatTooltipNumber</a></li><li><a href="global.html#formulaDisplayToValue">formulaDisplayToValue</a></li><li><a href="global.html#fullWidthHalfMaximum">fullWidthHalfMaximum</a></li><li><a href="global.html#generateDagJsEvaluator">generateDagJsEvaluator</a></li><li><a href="global.html#getAllByKeyPath">getAllByKeyPath</a></li><li><a href="global.html#getColormapTable">getColormapTable</a></li><li><a href="global.html#getColormapTableRGBA">getColormapTableRGBA</a></li><li><a href="global.html#getCurveBounds">getCurveBounds</a></li><li><a href="global.html#getDragPropertyKey">getDragPropertyKey</a></li><li><a href="global.html#getEffectiveRayPowerOptions">getEffectiveRayPowerOptions</a></li><li><a href="global.html#getFocalNormal">getFocalNormal</a></li><li><a href="global.html#getFocalPoints">getFocalPoints</a></li><li><a href="global.html#getImagePlacement">getImagePlacement</a></li><li><a href="global.html#getInteractionTypeIndex">getInteractionTypeIndex</a></li><li><a href="global.html#getIntersectionTolerancePolicy">getIntersectionTolerancePolicy</a></li><li><a href="global.html#getLensShape">getLensShape</a></li><li><a href="global.html#getNextModuleIdentifierName">getNextModuleIdentifierName</a></li><li><a href="global.html#getObjectPlacement">getObjectPlacement</a></li><li><a href="global.html#getRayIntersections">getRayIntersections</a></li><li><a href="global.html#getRayIntersectionsCubicBezier">getRayIntersectionsCubicBezier</a></li><li><a href="global.html#getRayIntersectionsLinear">getRayIntersectionsLinear</a></li><li><a href="global.html#getRoundingErrorFactor">getRoundingErrorFactor</a></li><li><a href="global.html#getShapeRadii">getShapeRadii</a></li><li><a href="global.html#glassShadeAlpha">glassShadeAlpha</a></li><li><a href="global.html#glslFloat">glslFloat</a></li><li><a href="global.html#glslPoly">glslPoly</a></li><li><a href="global.html#greensFunction">greensFunction</a></li><li><a href="global.html#gridSamplePosition">gridSamplePosition</a></li><li><a href="global.html#hankel0">hankel0</a></li><li><a href="global.html#hankel1">hankel1</a></li><li><a href="global.html#hasColormap">hasColormap</a></li><li><a href="global.html#initPath">initPath</a></li><li><a href="global.html#instantaneousField">instantaneousField</a></li><li><a href="global.html#intersectCurve">intersectCurve</a></li><li><a href="global.html#isAhead">isAhead</a></li><li><a href="global.html#isAtomicExpr">isAtomicExpr</a></li><li><a href="global.html#isClosed">isClosed</a></li><li><a href="global.html#isFormula">isFormula</a></li><li><a href="global.html#isFormulaValueSupported">isFormulaValueSupported</a></li><li><a href="global.html#isInGamut">isInGamut</a></li><li><a href="global.html#isInside">isInside</a></li><li><a href="global.html#isLiteralBooleanFieldValue">isLiteralBooleanFieldValue</a></li><li><a href="global.html#isLiteralNumericFieldValue">isLiteralNumericFieldValue</a></li><li><a href="global.html#isNonBasicProperty">isNonBasicProperty</a></li><li><a href="global.html#isNonDefault">isNonDefault</a></li><li><a href="global.html#isOnArc">isOnArc</a></li><li><a href="global.html#isOnBoundary">isOnBoundary</a></li><li><a href="global.html#isOnHandle">isOnHandle</a></li><li><a href="global.html#isOutside">isOutside</a></li><li><a href="global.html#isPointHardcoded">isPointHardcoded</a></li><li><a href="global.html#isPositivelyOriented">isPositivelyOriented</a></li><li><a href="global.html#isSourceIndexArray">isSourceIndexArray</a></li><li><a href="global.html#isTextareaAutoResizeMeasurable">isTextareaAutoResizeMeasurable</a></li><li><a href="global.html#isValidFormulaParameterName">isValidFormulaParameterName</a></li><li><a href="global.html#isWaveScene">isWaveScene</a></li><li><a href="global.html#latexToMathJS">latexToMathJS</a></li><li><a href="global.html#linearSrgbToOklab">linearSrgbToOklab</a></li><li><a href="global.html#linearToSrgb">linearToSrgb</a></li><li><a href="global.html#linkProgram">linkProgram</a></li><li><a href="global.html#listColormaps">listColormaps</a></li><li><a href="global.html#listColormapsForView">listColormapsForView</a></li><li><a href="global.html#lookup">lookup</a></li><li><a href="global.html#mathJSToLatex">mathJSToLatex</a></li><li><a href="global.html#mergeWithDefaults">mergeWithDefaults</a></li><li><a href="global.html#minimumRadius">minimumRadius</a></li><li><a href="global.html#newlinesToBr">newlinesToBr</a></li><li><a href="global.html#nextDuplicateIdentifier">nextDuplicateIdentifier</a></li><li><a href="global.html#nextRung">nextRung</a></li><li><a href="global.html#normalizeNumericStrings">normalizeNumericStrings</a></li><li><a href="global.html#normalizeParsedEquationAST">normalizeParsedEquationAST</a></li><li><a href="global.html#objAllows">objAllows</a></li><li><a href="global.html#objAllowsProperty">objAllowsProperty</a></li><li><a href="global.html#objectProperty">objectProperty</a></li><li><a href="global.html#observeTextareasResizeWhenVisible">observeTextareasResizeWhenVisible</a></li><li><a href="global.html#oklabToLinearSrgb">oklabToLinearSrgb</a></li><li><a href="global.html#oklchToSrgb">oklchToSrgb</a></li><li><a href="global.html#packWebGpuScene">packWebGpuScene</a></li><li><a href="global.html#parseFormula">parseFormula</a></li><li><a href="global.html#peakInSubspace">peakInSubspace</a></li><li><a href="global.html#perRayClosestDistance">perRayClosestDistance</a></li><li><a href="global.html#phaseExamples">phaseExamples</a></li><li><a href="global.html#phaseWheelCssGradient">phaseWheelCssGradient</a></li><li><a href="global.html#poly">poly</a></li><li><a href="global.html#populateObjBarShape">populateObjBarShape</a></li><li><a href="global.html#prepareCpuOutgoingRayData">prepareCpuOutgoingRayData</a></li><li><a href="global.html#prepareCurve">prepareCurve</a></li><li><a href="global.html#preprocessPrimitives">preprocessPrimitives</a></li><li><a href="global.html#previousRung">previousRung</a></li><li><a href="global.html#promptNewModuleName">promptNewModuleName</a></li><li><a href="global.html#promptNewModuleNameForHandle">promptNewModuleNameForHandle</a></li><li><a href="global.html#propagateChain">propagateChain</a></li><li><a href="global.html#rayleighSommerfeldKernel">rayleighSommerfeldKernel</a></li><li><a href="global.html#raysAvoidPoint">raysAvoidPoint</a></li><li><a href="global.html#raysConverge">raysConverge</a></li><li><a href="global.html#raysThroughPoint">raysThroughPoint</a></li><li><a href="global.html#recordWebGpuRecompilationNeeds">recordWebGpuRecompilationNeeds</a></li><li><a href="global.html#renderCpuRay">renderCpuRay</a></li><li><a href="global.html#resetInteractionIndexBuffers">resetInteractionIndexBuffers</a></li><li><a href="global.html#resolveInteraction">resolveInteraction</a></li><li><a href="global.html#resolvePrimitiveSimulatorConfig">resolvePrimitiveSimulatorConfig</a></li><li><a href="global.html#resolveSimulationEngineConfig">resolveSimulationEngineConfig</a></li><li><a href="global.html#resolveSourceDensity">resolveSourceDensity</a></li><li><a href="global.html#resolveUiOptions">resolveUiOptions</a></li><li><a href="global.html#resolveWaveSettings">resolveWaveSettings</a></li><li><a href="global.html#sagExamples">sagExamples</a></li><li><a href="global.html#sagitta">sagitta</a></li><li><a href="global.html#sampleColormap">sampleColormap</a></li><li><a href="global.html#sampleProfile">sampleProfile</a></li><li><a href="global.html#samplingDiagnostics">samplingDiagnostics</a></li><li><a href="global.html#sanitizePastedJson">sanitizePastedJson</a></li><li><a href="global.html#sceneAllows">sceneAllows</a></li><li><a href="global.html#segmentCrossings">segmentCrossings</a></li><li><a href="global.html#segmentsOfGoal">segmentsOfGoal</a></li><li><a href="global.html#setByKeyPath">setByKeyPath</a></li><li><a href="global.html#setViewportSize">setViewportSize</a></li><li><a href="global.html#snapToLadder">snapToLadder</a></li><li><a href="global.html#solveQuadraticRoots">solveQuadraticRoots</a></li><li><a href="global.html#splitTexCommaArgs">splitTexCommaArgs</a></li><li><a href="global.html#splitTopLevelCommas">splitTopLevelCommas</a></li><li><a href="global.html#srgbToLinear">srgbToLinear</a></li><li><a href="global.html#srgbToOklch">srgbToOklch</a></li><li><a href="global.html#stableRaySamplingPhase">stableRaySamplingPhase</a></li><li><a href="global.html#stripJsonComments">stripJsonComments</a></li><li><a href="global.html#stripMarkdownCodeFence">stripMarkdownCodeFence</a></li><li><a href="global.html#stripParenChain">stripParenChain</a></li><li><a href="global.html#stripRedundantParensForLatex">stripRedundantParensForLatex</a></li><li><a href="global.html#subspaceAt">subspaceAt</a></li><li><a href="global.html#subspaceIndexAt">subspaceIndexAt</a></li><li><a href="global.html#substituteDagParameters">substituteDagParameters</a></li><li><a href="global.html#suggestNewModuleName">suggestNewModuleName</a></li><li><a href="global.html#syntaxHelp">syntaxHelp</a></li><li><a href="global.html#tableShape">tableShape</a></li><li><a href="global.html#templatePointLockState">templatePointLockState</a></li><li><a href="global.html#textHasBacktickBlocks">textHasBacktickBlocks</a></li><li><a href="global.html#toJSON">toJSON</a></li><li><a href="global.html#tooltipAllTupleRowsConstant">tooltipAllTupleRowsConstant</a></li><li><a href="global.html#tooltipMantissaDecimalPlaces">tooltipMantissaDecimalPlaces</a></li><li><a href="global.html#tooltipPointTupleEqual">tooltipPointTupleEqual</a></li><li><a href="global.html#tooltipValueEqualForCollapse">tooltipValueEqualForCollapse</a></li><li><a href="global.html#traceLensShape">traceLensShape</a></li><li><a href="global.html#tracePath">tracePath</a></li><li><a href="global.html#traceSceneCapacityCounts">traceSceneCapacityCounts</a></li><li><a href="global.html#traverseBvhForInteraction">traverseBvhForInteraction</a></li><li><a href="global.html#traverseBvhForRegionMembership">traverseBvhForRegionMembership</a></li><li><a href="global.html#unwrapParenInCallableArgs">unwrapParenInCallableArgs</a></li><li><a href="global.html#updateInteractionCandidate">updateInteractionCandidate</a></li><li><a href="global.html#useBacktickHighlightLayer">useBacktickHighlightLayer</a></li><li><a href="global.html#useParenHighlightLayer">useParenHighlightLayer</a></li><li><a href="global.html#usePreferencesStore">usePreferencesStore</a></li><li><a href="global.html#useSceneStore">useSceneStore</a></li><li><a href="global.html#useStatus">useStatus</a></li><li><a href="global.html#useStatusStore">useStatusStore</a></li><li><a href="global.html#useThemeStore">useThemeStore</a></li><li><a href="global.html#useWebGpuTraceScene">useWebGpuTraceScene</a></li><li><a href="global.html#vTooltipPopover">vTooltipPopover</a></li><li><a href="global.html#validateDagNodeLabel">validateDagNodeLabel</a></li><li><a href="global.html#validateFormulaNodeLabel">validateFormulaNodeLabel</a></li><li><a href="global.html#validateIllustration">validateIllustration</a></li><li><a href="global.html#validateInteraction">validateInteraction</a></li><li><a href="global.html#validateNestedKeys">validateNestedKeys</a></li><li><a href="global.html#validateNumericEpsilon">validateNumericEpsilon</a></li><li><a href="global.html#validateTask">validateTask</a></li><li><a href="global.html#validateUiOptions">validateUiOptions</a></li><li><a href="global.html#validateWebGpuSpatialBounds">validateWebGpuSpatialBounds</a></li><li><a href="global.html#valueToFormulaDisplay">valueToFormulaDisplay</a></li><li><a href="global.html#versionUpdate">versionUpdate</a></li><li><a href="global.html#viewportCenterSceneCoords">viewportCenterSceneCoords</a></li><li><a href="global.html#waveFringeContrast">waveFringeContrast</a></li><li><a href="global.html#waveFringeSpacing">waveFringeSpacing</a></li><li><a href="global.html#waveIntensityPeak">waveIntensityPeak</a></li><li><a href="global.html#waveResolvedPeaks">waveResolvedPeaks</a></li><li><a href="global.html#waveSpotSize">waveSpotSize</a></li><li><a href="global.html#wavelengthInMedium">wavelengthInMedium</a></li><li><a href="global.html#wavenumber">wavenumber</a></li><li><a href="global.html#workloadOf">workloadOf</a></li><li><a href="global.html#writeCpuOutgoingRays">writeCpuOutgoingRays</a></li></ul>
+</nav>
+
+<br class="clear">
+
+<footer>
+    Documentation generated by <a href="https://github.com/jsdoc/jsdoc">JSDoc 4.0.4</a>
+</footer>
+
+<script> prettyPrint(); </script>
+<script src="scripts/linenumber.js"> </script>
+</body>
+</html>

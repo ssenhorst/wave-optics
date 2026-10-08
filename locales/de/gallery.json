@@ -1,0 +1,7 @@
+{
+  "galleryPage": {
+    "title": "Gallerie (Beispiele)",
+    "description": "Dies ist eine Sammlung an Simulationen, erstellt mit [the web app](/simulator), welche als interaktive Demos für Optomechanik genutzt werden können. Sie sind dazu eingeladen zu neuen Demos beizutragen. Siehe [the contribution guide](/contributing/gallery) für mehr Informationen. Um Fehler zu melden, öffnen Sie einen [open an issue on GitHub](/github/issues) oder sende Sie eine Mail [ray-optics@phydemo.app](/email).",
+    "openInSimulator": "Im Simulator öffnen"
+  }
+}

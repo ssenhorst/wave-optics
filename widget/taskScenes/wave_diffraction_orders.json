@@ -1,0 +1,115 @@
+{
+  "version": 5,
+  "name": "wave_diffraction_orders",
+  "objs": [
+    {
+      "type": "WavePlaneWave",
+      "name": "Illumination",
+      "x": -300,
+      "y": 0,
+      "angle": 0,
+      "amplitude": 1,
+      "interaction": {
+        "enabled": false
+      }
+    },
+    {
+      "type": "WaveSquareGrating",
+      "name": "Mask",
+      "p1": {
+        "x": 0,
+        "y": -150
+      },
+      "p2": {
+        "x": 0,
+        "y": 150
+      },
+      "pitch": 160,
+      "dutyCycle": 0.5,
+      "barTransmission": 0,
+      "barPhase": 0,
+      "refractiveIndexAfter": 1,
+      "interaction": {
+        "edit": false,
+        "properties": {
+          "pitch": true
+        }
+      }
+    },
+    {
+      "type": "WaveInterface",
+      "name": "Projection lens",
+      "p1": {
+        "x": 300,
+        "y": -300
+      },
+      "p2": {
+        "x": 300,
+        "y": 300
+      },
+      "eqnSag": "0",
+      "eqnAmplitude": "1",
+      "eqnPhase": "-0.0002244\\cdot y^2",
+      "refractiveIndexAfter": 1,
+      "interaction": {
+        "enabled": false
+      }
+    }
+  ],
+  "width": 1500,
+  "height": 1150,
+  "origin": {
+    "x": 400,
+    "y": 575
+  },
+  "scale": 1,
+  "waveOptics": {
+    "wavelength": 20.0,
+    "sourceDensity": 10,
+    "view": "intensity",
+    "upperCutoff": 2.5
+  },
+  "interaction": {
+    "enabled": false,
+    "create": false,
+    "pan": true,
+    "zoom": true,
+    "keyboard": false
+  },
+  "ui": {
+    "toolbar": false,
+    "objectBar": true,
+    "sidebar": false,
+    "statusBar": false
+  },
+  "task": {
+    "title": "Put the first diffraction order on the mark",
+    "description": "A plane wave lights a grating mask, and the lens brings each diffraction order to its own point in the pupil. Change the grating pitch until the first order lands on the mark. Select the mask to reach its pitch.",
+    "hint": "A grating of pitch p sends its first order out at sin(theta) = lambda / p, and the lens turns that angle into a height f*lambda/p in the pupil. The wavelength is 20 units and the lens focal length is 700.",
+    "successMessage": "That is the pupil plane of a scanner: the finer the mask, the further out its orders land, and once they fall outside the lens the pattern cannot print.",
+    "goals": [
+      {
+        "id": "order1",
+        "type": "waveIntensityPeak",
+        "title": "Land the first order on the mark",
+        "line": {
+          "p1": {
+            "x": 1000,
+            "y": 40
+          },
+          "p2": {
+            "x": 1000,
+            "y": 520
+          }
+        },
+        "point": {
+          "x": 1000,
+          "y": 140
+        },
+        "radius": 16,
+        "samples": 601,
+        "targetLabel": "+1 order"
+      }
+    ]
+  }
+}

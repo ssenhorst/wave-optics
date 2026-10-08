@@ -1,0 +1,10 @@
+{
+  "galleryPage": {
+    "title": "A Galeria de Ótica de Raios",
+    "description": "Esta é uma coleção de simulações feitas utilizando [a app web](/simulator), que podem ser utilizadas como demonstrações interativas de ótica. Contribuições de novos elementos são bem-vindas. Veja [O guia de contribuição](/contributing/gallery) para mais informação. Para reportar um erro, por favor [abra um issue no GitHub](/github/issues) ou mande um email para [ray-optics@phydemo.app](/email).",
+    "contributors_one": "Contribuidor: {{contributors}}",
+    "contributors_many": "Contribuidores: {{contributors}}",
+    "contributors_other": "Contribuidores: {{contributors}}",
+    "openInSimulator": "Abrir no Simulador"
+  }
+}

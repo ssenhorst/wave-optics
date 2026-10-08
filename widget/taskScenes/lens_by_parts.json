@@ -1,0 +1,263 @@
+{
+  "version": 5,
+  "name": "lens_by_parts",
+  "objs": [
+    {
+      "type": "Beam",
+      "name": "Source",
+      "p1": {
+        "x": -120,
+        "y": -60
+      },
+      "p2": {
+        "x": -120,
+        "y": 60
+      },
+      "brightness": 1,
+      "interaction": {
+        "enabled": false
+      }
+    },
+    {
+      "type": "Glass",
+      "name": "Wedge 1",
+      "path": [
+        {
+          "x": 48.6722,
+          "y": 105,
+          "arc": false
+        },
+        {
+          "x": 48.6722,
+          "y": 85,
+          "arc": false
+        },
+        {
+          "x": 52.6722,
+          "y": 85,
+          "arc": false
+        },
+        {
+          "x": 71.3278,
+          "y": 105,
+          "arc": false
+        }
+      ],
+      "refIndex": 1.2,
+      "partialReflect": false,
+      "interaction": {
+        "move": true,
+        "reshape": false
+      }
+    },
+    {
+      "type": "Glass",
+      "name": "Wedge 2",
+      "path": [
+        {
+          "x": 142.2365,
+          "y": -14,
+          "arc": false
+        },
+        {
+          "x": 142.2365,
+          "y": -34,
+          "arc": false
+        },
+        {
+          "x": 164.8921,
+          "y": -34,
+          "arc": false
+        },
+        {
+          "x": 177.7635,
+          "y": -14,
+          "arc": false
+        }
+      ],
+      "refIndex": 1.2,
+      "partialReflect": false,
+      "interaction": {
+        "move": true,
+        "reshape": false
+      }
+    },
+    {
+      "type": "Glass",
+      "name": "Wedge 3",
+      "path": [
+        {
+          "x": 84.8951,
+          "y": -80,
+          "arc": false
+        },
+        {
+          "x": 84.8951,
+          "y": -100,
+          "arc": false
+        },
+        {
+          "x": 120.4221,
+          "y": -100,
+          "arc": false
+        },
+        {
+          "x": 125.105,
+          "y": -80,
+          "arc": false
+        }
+      ],
+      "refIndex": 1.2,
+      "partialReflect": false,
+      "interaction": {
+        "move": true,
+        "reshape": false
+      }
+    },
+    {
+      "type": "Glass",
+      "name": "Wedge 4",
+      "path": [
+        {
+          "x": 24.8951,
+          "y": 25,
+          "arc": false
+        },
+        {
+          "x": 24.8951,
+          "y": 45,
+          "arc": false
+        },
+        {
+          "x": 60.4221,
+          "y": 45,
+          "arc": false
+        },
+        {
+          "x": 65.105,
+          "y": 25,
+          "arc": false
+        }
+      ],
+      "refIndex": 1.2,
+      "partialReflect": false,
+      "interaction": {
+        "move": true,
+        "reshape": false
+      }
+    },
+    {
+      "type": "Glass",
+      "name": "Wedge 5",
+      "path": [
+        {
+          "x": 177.2365,
+          "y": -60,
+          "arc": false
+        },
+        {
+          "x": 177.2365,
+          "y": -40,
+          "arc": false
+        },
+        {
+          "x": 199.8921,
+          "y": -40,
+          "arc": false
+        },
+        {
+          "x": 212.7635,
+          "y": -60,
+          "arc": false
+        }
+      ],
+      "refIndex": 1.2,
+      "partialReflect": false,
+      "interaction": {
+        "move": true,
+        "reshape": false
+      }
+    },
+    {
+      "type": "Glass",
+      "name": "Wedge 6",
+      "path": [
+        {
+          "x": 128.6722,
+          "y": 102,
+          "arc": false
+        },
+        {
+          "x": 128.6722,
+          "y": 122,
+          "arc": false
+        },
+        {
+          "x": 132.6722,
+          "y": 122,
+          "arc": false
+        },
+        {
+          "x": 151.3278,
+          "y": 102,
+          "arc": false
+        }
+      ],
+      "refIndex": 1.2,
+      "partialReflect": false,
+      "interaction": {
+        "move": true,
+        "reshape": false
+      }
+    }
+  ],
+  "width": 760,
+  "height": 520,
+  "origin": {
+    "x": 215,
+    "y": 235
+  },
+  "scale": 1.6,
+  "rayModeDensity": 0.05,
+  "showRayArrows": true,
+  "maxRayDepth": 6,
+  "interaction": {
+    "enabled": false,
+    "create": false,
+    "pan": true,
+    "zoom": true,
+    "keyboard": false
+  },
+  "ui": {
+    "toolbar": false,
+    "objectBar": false,
+    "sidebar": false,
+    "statusBar": false
+  },
+  "theme": {
+    "glass": {
+      "contrast": 2.2
+    }
+  },
+  "task": {
+    "title": "Build a lens out of flat wedges",
+    "description": "Each wedge of glass is fixed at its own angle, so each can only bend its ray by one amount. Slide the wedges into the beam so that every ray is refracted into the target spot.",
+    "hint": "A wedge bends its ray by an angle set by the tilt of its back face alone, so moving it only changes where that bent ray starts. Place each wedge where its bent ray passes through the target. The steeper the wedge, the further from the axis it has to sit.",
+    "successMessage": "Six flat wedges, each at its own angle: stacked in order they are a lens, and the curve of a lens surface is nothing more than the tilt each ray needs.",
+    "goals": [
+      {
+        "id": "focus",
+        "type": "raysThroughPoint",
+        "title": "Send all six rays through the target",
+        "point": {
+          "x": 250,
+          "y": 0
+        },
+        "radius": 5,
+        "count": 6,
+        "minDepth": 2,
+        "targetLabel": "focus"
+      }
+    ]
+  }
+}

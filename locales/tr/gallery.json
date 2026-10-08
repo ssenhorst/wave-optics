@@ -1,0 +1,9 @@
+{
+  "galleryPage": {
+    "title": "Ray Optics Galerisi",
+    "description": "Bu, optik konusunda etkileşimli demolar olarak kullanılabilen [web uygulaması](/simulator) kullanılarak yapılan simülasyonların bir koleksiyonudur. Yeni öğeler ekleyerek katkıda bulunabilirsiniz. Daha fazla bilgi için [katkı kılavuzuna](/contributing/gallery) bakın. Bir hatayı bildirmek için lütfen [GitHub'da bir sorun açın](/github/issues) veya [ray-optics@phydemo.app](/email) adresine e-posta gönderin.",
+    "contributors_one": "Katkıda bulunan: {{contributors}}",
+    "contributors_other": "Katkıda bulunanlar: {{contributors}}",
+    "openInSimulator": "Simülatörde aç"
+  }
+}

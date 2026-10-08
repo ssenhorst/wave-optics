@@ -1,0 +1,8 @@
+{
+  "galleryPage": {
+    "title": "「線光學模擬」作品集",
+    "description": "以下列表為使用[「線光學模擬」網頁程式](/simulator)製作的互動式光學演示。歡迎您貢獻新項目（請參閱[貢獻指南](/contributing/gallery)）。如發現內容有誤，請[在GitHub上建立Issue](/github/issues)或發送電子郵件至[ray-optics@phydemo.app](/email)。",
+    "contributors": "貢獻者：{{contributors}}",
+    "openInSimulator": "在模擬器中開啟"
+  }
+}
