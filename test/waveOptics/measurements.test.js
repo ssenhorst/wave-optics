@@ -171,6 +171,25 @@ describe('screen', () => {
     expect(step).toBeGreaterThan(0);
   }, 30000);
 
+  test('the far-field angular range is measured from its vertex', () => {
+    const scene = makeScene();
+    const screen = new WaveScreen(scene, {
+      p1: { x: 1100, y: 100 },
+      p2: { x: 1100, y: 700 },
+      p3: { x: 500, y: 400 },
+      farField: true,
+    });
+
+    const layout = screen.samplePoints();
+    expect(layout.axis[0]).toBeCloseTo(
+      Math.atan2(100 - 400, 1100 - 500) * 180 / Math.PI, 6
+    );
+    expect(screen.farFieldOrigin()).toMatchObject({ x: 500, y: 400 });
+
+    screen.p3 = { x: 1100, y: 100 };
+    expect(screen.samplePoints()).toBeNull();
+  });
+
   test('sampleCount sets how many points the plot has, clamped to a sane range', () => {
     const scene = makeScene();
     addPlaneWave(scene, 100, 400);

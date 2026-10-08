@@ -60,9 +60,9 @@ const TICK_COUNT = 8;
  * Putting a detector into a scene should not change the scene.
  *
  * In far-field mode it stops being a place at all. The curve then shows the
- * pattern at infinity, over the angles the screen's own endpoints subtend at the
- * last surface, and is drawn as a dashed arc in a different colour because there
- * is nothing there — the same scene with the screen moved further out would show
+ * pattern at infinity, over the angles the screen's own endpoints subtend at its
+ * vertex, and is drawn as a dashed arc in a different colour because there is
+ * nothing there — the same scene with the screen moved further out would show
  * something else.
  *
  * Tools -> Measure -> Screen
@@ -71,6 +71,7 @@ const TICK_COUNT = 8;
  * @memberof sceneObjs
  * @property {Point} p1 - One end of the slice.
  * @property {Point} p2 - The other end.
+ * @property {Point|null} p3 - The far-field angular-range vertex.
  * @property {string} plotMode - 'intensity', 'real' or 'amplitudePhase'.
  * @property {string} units - 'wavelengths' or 'scene', for the axis.
  * @property {boolean} farField - Show the pattern at infinity instead of here.
@@ -84,6 +85,7 @@ class WaveScreen extends LineObjMixin(BaseSceneObj) {
   static serializableDefaults = {
     p1: null,
     p2: null,
+    p3: null,
     plotMode: 'intensity',
     units: 'wavelengths',
     farField: false,
@@ -116,6 +118,10 @@ class WaveScreen extends LineObjMixin(BaseSceneObj) {
   static getPropertySchema(objData, scene) {
     return [
       ...super.getPropertySchema(objData, scene),
+      {
+        key: 'p3', type: 'point',
+        label: i18next.t('simulator:sceneObjs.ParabolicMirror.vertex'),
+      },
       {
         key: 'plotMode', type: 'dropdown',
         label: i18next.t('simulator:waveSceneObjs.common.plotMode'),
@@ -191,6 +197,49 @@ class WaveScreen extends LineObjMixin(BaseSceneObj) {
       (this.p1.x !== this.p2.x || this.p1.y !== this.p2.y);
   }
 
+  onConstructMouseDown(mouse, ctrl, shift) {
+    if (this.constructionPoint) return;
+    this.constructionPoint = mouse.getPosSnappedToGrid();
+    this.p1 = this.constructionPoint;
+    this.p2 = this.constructionPoint;
+    this.p3 = null;
+  }
+
+  onConstructMouseMove(mouse, ctrl, shift) {
+    const point = mouse.getPosSnappedToGrid();
+    if (this.p3) {
+      this.p3 = point;
+    } else if (shift) {
+      this.p2 = mouse.getPosSnappedToDirection(this.constructionPoint, [
+        { x: 1, y: 0 }, { x: 0, y: 1 }, { x: 1, y: 1 }, { x: 1, y: -1 },
+      ]);
+      this.p1 = ctrl
+        ? { x: 2 * this.constructionPoint.x - this.p2.x, y: 2 * this.constructionPoint.y - this.p2.y }
+        : this.constructionPoint;
+    } else {
+      this.p2 = point;
+      this.p1 = ctrl
+        ? { x: 2 * this.constructionPoint.x - this.p2.x, y: 2 * this.constructionPoint.y - this.p2.y }
+        : this.constructionPoint;
+    }
+    return { requiresObjBarUpdate: true };
+  }
+
+  onConstructMouseUp(mouse) {
+    const point = mouse.getPosSnappedToGrid();
+    if (!this.p3) {
+      this.p2 = point;
+      this.p3 = point;
+      return { requiresObjBarUpdate: true };
+    }
+    this.p3 = point;
+    if (geometry.distanceSquared(this.p3, this.p1) > 0 &&
+      geometry.distanceSquared(this.p3, this.p2) > 0) {
+      delete this.constructionPoint;
+      return { isDone: true, requiresObjBarUpdate: true };
+    }
+  }
+
   /** The midpoint of the slice. */
   center() {
     return { x: (this.p1.x + this.p2.x) / 2, y: (this.p1.y + this.p2.y) / 2 };
@@ -217,8 +266,8 @@ class WaveScreen extends LineObjMixin(BaseSceneObj) {
   }
 
   /**
-   * The last surface before this screen, whose centre the far-field angles are
-   * measured from.
+  * The last surface before this screen, used to set the far-field probe radius
+  * and as the origin for older screens without an explicit vertex.
    * @returns {Object|null}
    */
   lastSurface() {
@@ -232,13 +281,15 @@ class WaveScreen extends LineObjMixin(BaseSceneObj) {
     return found;
   }
 
-  /** The point far-field angles are measured from: the last surface's centre. */
+  /** The explicit far-field vertex, or the legacy last-surface centre. */
   farFieldOrigin() {
     const surface = this.lastSurface();
+    const extent = surface?.getExtent();
+    const halfWidth = extent ? (extent.yMax - extent.yMin) / 2 : 0;
+    if (this.p3) return { ...this.p3, halfWidth };
     if (!surface) return null;
-    const extent = surface.getExtent();
     const y = (extent.yMin + extent.yMax) / 2;
-    return { x: surface.zAt(y), y, halfWidth: (extent.yMax - extent.yMin) / 2 };
+    return { x: surface.zAt(y), y, halfWidth };
   }
 
   /**
@@ -286,7 +337,8 @@ class WaveScreen extends LineObjMixin(BaseSceneObj) {
   /** @private */
   farFieldPoints() {
     const origin = this.farFieldOrigin();
-    if (!origin) return null;
+    if (!origin || geometry.distanceSquared(origin, this.p1) === 0 ||
+      geometry.distanceSquared(origin, this.p2) === 0) return null;
 
     const angleTo = (point) => Math.atan2(point.y - origin.y, point.x - origin.x);
     const from = angleTo(this.p1);
@@ -349,7 +401,7 @@ class WaveScreen extends LineObjMixin(BaseSceneObj) {
   measure() {
     const serial = fieldSerial(this.scene);
     const key = JSON.stringify([
-      serial, this.p1, this.p2, this.farField, this.plotMode, this.samples(),
+      serial, this.p1, this.p2, this.p3, this.farField, this.plotMode, this.samples(),
     ]);
     if (this._cache?.key === key) return this._cache.result;
 
@@ -409,6 +461,31 @@ class WaveScreen extends LineObjMixin(BaseSceneObj) {
       : (this.farField ? VIRTUAL_COLOR : MEASURE_COLOR);
 
     this.drawScreenLine(canvasRenderer, color);
+
+    if (this.farField && (isHovered || this.isSelected())) {
+      const vertex = this.farFieldOrigin();
+      if (vertex) {
+        const ctx = canvasRenderer.ctx;
+        const ls = canvasRenderer.lengthScale;
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.globalAlpha = 0.55;
+        ctx.lineWidth = ls;
+        ctx.setLineDash([4 * ls, 3 * ls]);
+        ctx.beginPath();
+        ctx.moveTo(vertex.x, vertex.y);
+        ctx.lineTo(this.p1.x, this.p1.y);
+        ctx.moveTo(vertex.x, vertex.y);
+        ctx.lineTo(this.p2.x, this.p2.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.globalAlpha = 1;
+        ctx.beginPath();
+        ctx.arc(vertex.x, vertex.y, 5 * ls, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
 
     if (isHovered || this.isSelected()) {
       for (const end of [this.p1, this.p2]) {
@@ -635,6 +712,15 @@ class WaveScreen extends LineObjMixin(BaseSceneObj) {
   }
 
   checkMouseOver(mouse) {
+    if (this.farField && this.isValid()) {
+      const vertex = this.farFieldOrigin();
+      if (vertex && mouse.isOnPoint(vertex)) {
+        return {
+          part: 3,
+          targetPoint: geometry.point(vertex.x, vertex.y),
+        };
+      }
+    }
     const result = super.checkMouseOver(mouse);
     if (result) return result;
     // A far-field screen is drawn as an arc, so the straight chord it is
@@ -647,6 +733,55 @@ class WaveScreen extends LineObjMixin(BaseSceneObj) {
           return { part: 0, mousePos0: mousePos, mousePos1: mousePos, snapContext: {} };
         }
       }
+    }
+  }
+
+  move(diffX, diffY) {
+    super.move(diffX, diffY);
+    if (this.p3) {
+      this.p3.x += diffX;
+      this.p3.y += diffY;
+    }
+    return true;
+  }
+
+  rotate(angle, center = null) {
+    const rotationCenter = center || this.getDefaultCenter();
+    super.rotate(angle, rotationCenter);
+    if (this.p3) {
+      const dx = this.p3.x - rotationCenter.x;
+      const dy = this.p3.y - rotationCenter.y;
+      this.p3 = {
+        x: rotationCenter.x + dx * Math.cos(angle) - dy * Math.sin(angle),
+        y: rotationCenter.y + dx * Math.sin(angle) + dy * Math.cos(angle),
+      };
+    }
+    return true;
+  }
+
+  scale(scale, center = null) {
+    const scalingCenter = center || this.getDefaultCenter();
+    super.scale(scale, scalingCenter);
+    if (this.p3) {
+      this.p3 = {
+        x: scalingCenter.x + (this.p3.x - scalingCenter.x) * scale,
+        y: scalingCenter.y + (this.p3.y - scalingCenter.y) * scale,
+      };
+    }
+    return true;
+  }
+
+  onDrag(mouse, dragContext, ctrl, shift) {
+    if (dragContext.part === 3) {
+      const point = mouse.getPosSnappedToGrid();
+      this.p3 = point;
+      return;
+    }
+    const previousMousePos = dragContext.part === 0 ? dragContext.mousePos1 : null;
+    super.onDrag(mouse, dragContext, ctrl, shift);
+    if (previousMousePos && this.p3) {
+      this.p3.x += dragContext.mousePos1.x - previousMousePos.x;
+      this.p3.y += dragContext.mousePos1.y - previousMousePos.y;
     }
   }
 
