@@ -21,6 +21,7 @@ import WavePlaneWave from '../../src/core/sceneObjs/wave/WavePlaneWave.js';
 import WavePointSource from '../../src/core/sceneObjs/wave/WavePointSource.js';
 import WaveMultiSlit from '../../src/core/sceneObjs/wave/WaveMultiSlit.js';
 import WaveInterface from '../../src/core/sceneObjs/wave/WaveInterface.js';
+import WaveRuler from '../../src/core/sceneObjs/wave/WaveRuler.js';
 import { buildWaveModel } from '../../src/core/waveOptics/waveSceneModel.js';
 import { computeFieldGrid } from '../../src/core/waveOptics/waveSceneModel.js';
 import { computeModelFieldAt } from '../../src/core/waveOptics/WaveFieldEngineCpu.js';
@@ -77,6 +78,51 @@ function addPlaneWave(scene, x, y) {
   scene.objs.push(wave);
   return wave;
 }
+
+describe('wave ruler', () => {
+  test('exposes and saves the wavelength-units toggle', () => {
+    const scene = makeScene();
+    const ruler = new WaveRuler(scene, {
+      p1: { x: 100, y: 100 }, p2: { x: 300, y: 100 },
+    });
+    const createBoolean = jest.fn();
+
+    ruler.populateObjBar({
+      setTitle() {},
+      createNumber() {},
+      createBoolean,
+    });
+
+    const [, initialValue, setValue] = createBoolean.mock.calls[0];
+    expect(initialValue).toBe(false);
+    setValue(ruler, true);
+    expect(ruler.serialize()).toMatchObject({
+      type: 'WaveRuler', wavelengthUnits: true,
+    });
+  });
+
+  test('draws on the layer above the field', () => {
+    const scene = makeScene();
+    const ruler = new WaveRuler(scene, {
+      p1: { x: 100, y: 100 }, p2: { x: 300, y: 100 }, wavelengthUnits: true,
+    });
+    const ctx = {
+      beginPath: jest.fn(), moveTo: jest.fn(), lineTo: jest.fn(), stroke: jest.fn(),
+      save: jest.fn(), restore: jest.fn(), translate: jest.fn(), rotate: jest.fn(),
+      fillText: jest.fn(),
+    };
+    const renderer = { ctx, lengthScale: 1, rgbaToCssColor: () => 'gray' };
+
+    ruler.draw(renderer, false, false);
+    expect(ctx.beginPath).not.toHaveBeenCalled();
+
+    ruler.draw(renderer, true, false);
+    expect(ctx.beginPath).toHaveBeenCalled();
+    expect(ctx.fillText.mock.calls.map(([label]) => label)).toEqual([
+      '0 λ', '5 λ', '10 λ',
+    ]);
+  });
+});
 
 describe('screen', () => {
   test('takes no part in the optics', () => {

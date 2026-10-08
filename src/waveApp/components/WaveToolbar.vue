@@ -148,6 +148,7 @@ const TOOL_GROUPS = [
     id: 'measure',
     label: 'Measure',
     items: [
+      { type: 'WaveRuler', label: 'Ruler', hint: 'Drag to measure distance along a marked scale' },
       { type: 'WaveScreen', label: 'Screen', hint: 'Drag to set the screen endpoints, then place the far-field vertex' },
       { type: 'WaveFocusProbe', label: 'Focus probe', hint: 'Click to find the brightest point of that subspace' },
     ],
@@ -213,6 +214,7 @@ export default {
      * and served from the shared image directory a level up from this app.
      */
     toolIcon(type) {
+      if (type === 'WaveRuler') return '../img/Ruler.svg';
       return `../img/wave/tool-${type}.jpg`;
     },
     toggleMenu(id) {

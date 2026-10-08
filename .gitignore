@@ -16,3 +16,5 @@ __pycache__/
 
 # The Python build, which writes here when run without an --outdir.
 /python-dist/
+
+.DS_*
