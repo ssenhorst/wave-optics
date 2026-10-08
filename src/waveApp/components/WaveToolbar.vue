@@ -148,7 +148,7 @@ const TOOL_GROUPS = [
     id: 'measure',
     label: 'Measure',
     items: [
-      { type: 'WaveScreen', label: 'Screen', hint: 'Drag a line; select it to plot the field along it' },
+      { type: 'WaveScreen', label: 'Screen', hint: 'Drag to set the screen endpoints, then place the far-field vertex' },
       { type: 'WaveFocusProbe', label: 'Focus probe', hint: 'Click to find the brightest point of that subspace' },
     ],
   },

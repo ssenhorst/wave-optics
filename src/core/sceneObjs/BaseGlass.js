@@ -16,6 +16,7 @@
 
 import BaseSceneObj from './BaseSceneObj.js';
 import i18next from 'i18next';
+import { glassShadeAlpha } from './glassShading.js';
 import geometry from '../geometry.js';
 import { parseFormula } from '../formula/formula-parser.js';
 import {
@@ -129,7 +130,7 @@ class BaseGlass extends BaseSceneObj {
     }
     const mod_neg = n < 0 ? -1 : 1;
     if (n * mod_neg >= 1) {
-      var alpha = Math.log(n * mod_neg) / Math.log(1.5) * 0.2;
+      var alpha = Math.min(1, glassShadeAlpha(n * mod_neg, this.scene));
       if (allowColorSubtraction) {
         ctx.globalCompositeOperation = 'lighter';
         ctx.fillStyle = mod_neg < 0 ? "rgb(" + Math.round(alpha * this.scene.theme.glass.color.r * 0.75 * 255) + "," + Math.round(alpha * this.scene.theme.glass.color.g * 255) + "," + Math.round(alpha * this.scene.theme.glass.color.b * 0.75 * 255) + ")" : "rgb(" + Math.round(alpha * this.scene.theme.glass.color.r * 255) + "," + Math.round(alpha * this.scene.theme.glass.color.g * 255) + "," + Math.round(alpha * this.scene.theme.glass.color.b * 255) + ")";
@@ -142,7 +143,7 @@ class BaseGlass extends BaseSceneObj {
       ctx.globalCompositeOperation = 'source-over';
 
     } else {
-      var alpha = Math.log(1 / (n * mod_neg)) / Math.log(1.5) * 0.2;
+      var alpha = Math.min(1, glassShadeAlpha(1 / (n * mod_neg), this.scene));
       if (allowColorSubtraction) {
         // Subtract the gray color.
         // Use a trick to make the color become red (indicating nonphysical) if the total refractive index is lower than one.

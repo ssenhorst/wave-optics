@@ -25,6 +25,7 @@
  */
 
 import geometry from '../geometry.js';
+import { glassShadeAlpha } from './glassShading.js';
 
 /**
  * @typedef {Object} LensShape
@@ -163,7 +164,7 @@ export function drawLensShape(ctx, canvasRenderer, scene, shape, refIndex, isHov
 
   traceLensShape(ctx, shape);
 
-  ctx.globalAlpha = Math.min(0.5, Math.max(0.08, Math.log(Math.max(1.01, refIndex)) / Math.log(1.5) * 0.2));
+  ctx.globalAlpha = Math.min(0.5, Math.max(0.08, glassShadeAlpha(Math.max(1.01, refIndex), scene)));
   ctx.fillStyle = canvasRenderer.rgbaToCssColor({ r: glass.r, g: glass.g, b: glass.b, a: 1 });
   ctx.fill();
 

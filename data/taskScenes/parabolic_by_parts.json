@@ -113,6 +113,7 @@
   "width": 900,
   "height": 620,
   "rayModeDensity": 0.049787068367863944,
+  "showRayArrows": true,
   "maxRayDepth": 1,
   "origin": {
     "x": 450,
