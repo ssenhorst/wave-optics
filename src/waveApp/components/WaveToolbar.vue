@@ -27,6 +27,42 @@
         </button>
       </div>
 
+      <!-- Export -->
+      <div class="wave-menu">
+        <button class="btn btn-sm" :class="recording ? 'btn-primary' : 'btn-outline-light'"
+          :title="recording ? 'Stop the recording' : 'Save the canvas as an image or a video'"
+          @click="recording ? cancelRecording() : toggleMenu('export')">
+          {{ recording ? `Recording ${Math.round(recordProgress * 100)}%` : 'Export' }}
+          <template v-if="!recording">&#9662;</template>
+        </button>
+        <ul class="wave-menu-list wave-export-list" v-show="openMenu === 'export' && !recording">
+          <li>
+            <button type="button" @click="onExportImage">
+              <span class="wave-menu-text">
+                <span class="wave-menu-label">Image (PNG)</span>
+                <span class="wave-menu-hint">The canvas as it is now.</span>
+              </span>
+            </button>
+          </li>
+          <li>
+            <button type="button" :disabled="!canRecordCycle" @click="onExportVideo('cycle')">
+              <span class="wave-menu-text">
+                <span class="wave-menu-label">One cycle (MP4)</span>
+                <span class="wave-menu-hint">{{ cycleHint }}</span>
+              </span>
+            </button>
+          </li>
+          <li>
+            <button type="button" :disabled="!isTimeMode" @click="onExportVideo('span')">
+              <span class="wave-menu-text">
+                <span class="wave-menu-label">Whole time span (MP4)</span>
+                <span class="wave-menu-hint">{{ spanHint }}</span>
+              </span>
+            </button>
+          </li>
+        </ul>
+      </div>
+
       <span class="wave-divider"></span>
 
       <!-- Examples -->
@@ -195,9 +231,48 @@ export default {
         : 'The intensity view is time-averaged, so there is nothing to animate';
     });
 
+    // A time-harmonic field repeats every cycle, so one cycle is the whole of
+    // its motion — and only the views that show an instant have any motion.
+    const canRecordCycle = computed(() => !isTimeMode.value && view.value !== 'intensity');
+    const recording = ref(false);
+    const recordProgress = ref(0);
+    let cancelRequested = false;
+
+    const onExportVideo = async (kind) => {
+      openMenu.value = null;
+      recording.value = true;
+      recordProgress.value = 0;
+      cancelRequested = false;
+      try {
+        await app.exportVideo(kind, {
+          onProgress: (fraction) => { recordProgress.value = fraction; },
+          isCancelled: () => cancelRequested,
+        });
+      } catch (e) {
+        window.alert(e.message);
+      } finally {
+        recording.value = false;
+      }
+    };
+
     return {
       store,
       fileInput,
+      canRecordCycle,
+      recording,
+      recordProgress,
+      onExportVideo,
+      cancelRecording: () => { cancelRequested = true; },
+      onExportImage: () => {
+        openMenu.value = null;
+        app.exportImage().catch((e) => window.alert(e.message));
+      },
+      cycleHint: computed(() => (canRecordCycle.value
+        ? 'One optical cycle of the instantaneous field, looping.'
+        : 'For a time-harmonic scene in the Field or Amp+phase view.')),
+      spanHint: computed(() => (isTimeMode.value
+        ? 'The sources\' signals crossing the scene, start to end.'
+        : 'For a scene with time-dependent sources.')),
       example,
       openMenu,
       linkLabel,
@@ -393,8 +468,16 @@ export default {
   line-height: 1.25;
 }
 
-.wave-menu-list button:hover {
+.wave-menu-list button:hover:not(:disabled) {
   background-color: rgba(255, 255, 255, 0.1);
+}
+
+.wave-menu-list button:disabled {
+  opacity: 0.4;
+}
+
+.wave-export-list {
+  min-width: 260px;
 }
 
 .wave-menu-list button.wave-menu-active {

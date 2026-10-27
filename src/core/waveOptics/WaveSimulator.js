@@ -145,6 +145,10 @@ class WaveSimulator {
      */
     this.timeSpan = 0;
 
+    /** @property {boolean} isCapturing - Whether a recording is driving the clock. */
+    this.isCapturing = false;
+    this.captureState = null;
+
     /** Whether the colour scale still needs reading back for this change. */
     this.needsStats = true;
     this.animationFrameId = -1;
@@ -304,6 +308,8 @@ class WaveSimulator {
     // A time-dependent scene recomputes every frame while it plays, so it stays
     // at the resolution that fits a frame; the climb resumes when it stops.
     if (this.isTimeMode && this.isAnimating) return;
+    // A recording must not change resolution between its frames.
+    if (this.isCapturing) return;
     const next = this.adaptive.nextStep(this.currentResolution, target, this.lastComputeMs);
     if (next === null) return;
 
@@ -629,6 +635,42 @@ class WaveSimulator {
       this.engine.computeFieldAtTime(this.lastModel, this.time);
     } catch (e) {
       this.error = e.message;
+    }
+  }
+
+  /**
+   * Hold the picture steady for a recording: pause playback and the resolution
+   * climb, so every frame is drawn from the same model at the same resolution,
+   * and the recording drives the clock itself through {@link setTime}.
+   */
+  beginCapture() {
+    this.captureState = { wasAnimating: this.isAnimating, time: this.time };
+    this.isCapturing = true;
+    if (this.refineTimerId !== -1) {
+      clearTimeout(this.refineTimerId);
+      this.refineTimerId = -1;
+    }
+    if (this.isAnimating) {
+      // Stopped directly rather than through stopAnimation, which would start
+      // climbing back to the settled resolution in the middle of the recording.
+      this.isAnimating = false;
+      if (this.animationFrameId !== -1) cancelAnimationFrame(this.animationFrameId);
+      this.animationFrameId = -1;
+    }
+  }
+
+  /** Put the clock and playback back as they were before {@link beginCapture}. */
+  endCapture() {
+    const state = this.captureState ?? { wasAnimating: false, time: this.time };
+    this.isCapturing = false;
+    this.captureState = null;
+    this.setTime(state.time);
+    if (state.wasAnimating) {
+      // startAnimation returns early while isAnimating is set, and the loop
+      // itself was cancelled, so it is restarted from scratch.
+      this.startAnimation();
+    } else {
+      this.emit('animationChange', { isAnimating: false });
     }
   }
 

@@ -25,6 +25,12 @@ import Simulator from './Simulator.js';
 import { objAllows, objAllowsProperty, sceneAllows, getDragPropertyKey } from './interaction.js';
 
 /**
+ * How long after Shift is let go a drag stays constrained, in milliseconds;
+ * see {@link Editor#heldShiftKey}.
+ */
+const SHIFT_RELEASE_GRACE_MS = 200;
+
+/**
  * @typedef {Object} DragContext
  * @property {number} part - The index of the part within the object being dragged. 0 for the whole object.
  * @property {Point} [targetPoint] - The target point where the user is dragging. This is recognized by the editor so that it can be used for popping up the coordinate box (when the user double-clicks or right-clicks such a point), or binding to a handle (when the user holds Ctrl and clicks such a point).
@@ -1011,12 +1017,37 @@ class Editor {
    * Handle the equivalent of the mousemove event on the canvas, which can be triggered by both mouse and single touch.
    * @param {MouseEvent} e - The event.
    */
+  /**
+   * Whether Shift counts as held for a mouse move, with a short grace period
+   * after it is let go.
+   *
+   * Releasing a Shift-constrained drag usually means letting go of Shift a
+   * moment before the mouse button, and the hand moves a little in between.
+   * Without the grace period that last move arrives unconstrained, so the
+   * object jumps off its constraint exactly as it is dropped. Letting go of
+   * Shift and then carrying on dragging still unlocks the constraint, just
+   * after a beat.
+   *
+   * @param {MouseEvent|TouchEvent} e
+   * @returns {boolean}
+   * @private
+   */
+  heldShiftKey(e) {
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    if (e.shiftKey) {
+      this.shiftHeldAt = now;
+      return true;
+    }
+    return this.shiftHeldAt !== undefined && now - this.shiftHeldAt < SHIFT_RELEASE_GRACE_MS;
+  }
+
   onCanvasMouseMove(e) {
     if (e.changedTouches) {
       var et = e.changedTouches[0];
     } else {
       var et = e;
     }
+    const shiftKey = this.heldShiftKey(e);
     
     // Get raw coordinates first
     const canvasOffset = this.getCanvasPageOffset();
@@ -1123,7 +1154,7 @@ class Editor {
       this.hoveredObjIndex = this.scene.objs.length - 1;
 
       // If some object is being created, pass the action to it
-      const ret = this.scene.objs[this.scene.objs.length - 1].onConstructMouseMove(new Mouse(this.mousePos, this.scene, this.lastDeviceIsTouch), e.ctrlKey, e.shiftKey);
+      const ret = this.scene.objs[this.scene.objs.length - 1].onConstructMouseMove(new Mouse(this.mousePos, this.scene, this.lastDeviceIsTouch), e.ctrlKey, shiftKey);
       if (ret && ret.isDone) {
         this.isConstructing = false;
         this.emit('resetVirtualKeys');
@@ -1135,7 +1166,7 @@ class Editor {
     }
     else {
       if (this.draggingObjIndex == -4) {
-        if (e.shiftKey) {
+        if (shiftKey) {
           var mousePos_snapped = (new Mouse(this.mousePos, this.scene, this.lastDeviceIsTouch)).getPosSnappedToDirection(this.dragContext.mousePos0, [{ x: 1, y: 0 }, { x: 0, y: 1 }], this.dragContext.snapContext);
         }
         else {
@@ -1168,7 +1199,7 @@ class Editor {
 
         const dragPos = this.constrainDragToAllowedAxes(
           this.scene.objs[this.draggingObjIndex], this.dragContext, mousePos_nogrid);
-        this.scene.objs[this.draggingObjIndex].onDrag(new Mouse(dragPos, this.scene, this.lastDeviceIsTouch, e.altKey * 1), this.dragContext, e.ctrlKey, e.shiftKey);
+        this.scene.objs[this.draggingObjIndex].onDrag(new Mouse(dragPos, this.scene, this.lastDeviceIsTouch, e.altKey * 1), this.dragContext, e.ctrlKey, shiftKey);
         // If dragging an entire object, then when Ctrl is hold, clone the object
         if (this.dragContext.part == 0) {
           if (e.ctrlKey && !this.dragContext.hasDuplicated) {

@@ -97,6 +97,20 @@ class WaveScreen extends LineObjMixin(BaseSceneObj) {
     timeAveraging: 'average'
   };
 
+  /**
+   * A screen placed with the tool shows its plot straight away, since reading
+   * the plot is what a screen is for. The tool passes an empty object, or a
+   * copy of a selected screen whose setting it then keeps; loaded screens keep
+   * whatever they were saved with, so the stored default stays as it was and
+   * no existing scene changes.
+   * @param {Scene} scene
+   * @param {Object} [jsonObj]
+   */
+  constructor(scene, jsonObj) {
+    super(scene, jsonObj);
+    if (!jsonObj || Object.keys(jsonObj).length === 0) this.alwaysShowPlot = true;
+  }
+
   static getDescription(objData, scene, detailed = false) {
     return i18next.t('main:waveTools.WaveScreen.title');
   }
