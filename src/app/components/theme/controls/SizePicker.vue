@@ -31,7 +31,7 @@
       <!-- Text input on the right -->
       <div class="size-input">
         <TextInput 
-          :modelValue="modelValue.toFixed(1) + 'px'" 
+          :modelValue="modelValue.toFixed(1) + unit" 
           @update:modelValue="updateValue"
           inputClass="size-value"
           :min="min"
@@ -53,6 +53,8 @@
  * @vue-prop {number} max - The maximum value for the slider range (default: 10).
  * @vue-prop {number} textInputMax - The maximum value for text input validation (default: null, uses max).
  * @vue-prop {number} step - The step size (default: 0.1).
+ * @vue-prop {string} unit - The unit shown after the value, and stripped from what is typed in
+ *   (default: 'px'). Pass an empty string for a bare number such as a scale factor.
  */
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import TextInput from './TextInput.vue'
@@ -82,6 +84,10 @@ export default {
     step: {
       type: Number,
       default: 0.1
+    },
+    unit: {
+      type: String,
+      default: 'px'
     }
   },
   emits: ['update:modelValue'],
@@ -104,8 +110,10 @@ export default {
 
     // Update method for TextInput
     const updateValue = (value) => {
-      // Remove "px" suffix if present and parse the number
-      const cleanValue = typeof value === 'string' ? value.replace(/px\s*$/i, '').trim() : value
+      // Remove the unit suffix if present and parse the number
+      const cleanValue = typeof value === 'string' && props.unit
+        ? value.replace(new RegExp(props.unit.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*$', 'i'), '').trim()
+        : value
       const rawValue = parseFloat(cleanValue)
       if (!isNaN(rawValue)) {
         let newValue = roundToStep(clampValueForTextInput(rawValue))

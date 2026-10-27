@@ -29,6 +29,16 @@
               :fillOptions="fillOptions"
               @update:modelValue="handleColorChange"
             />
+            <SizePicker
+              v-if="fillOptions.contrast !== undefined"
+              :modelValue="fillOptions.contrast"
+              :min="0.1"
+              :max="5"
+              :textInputMax="20"
+              :step="0.1"
+              unit=""
+              @update:modelValue="handleContrastChange"
+            />
           </div>
         </div>
       </div>
@@ -41,16 +51,19 @@
  * @module FillControl
  * @description A theme control component for selecting fill options (color, texture, etc.).
  * @vue-prop {String} label - The label text for the control.
- * @vue-prop {Object} fillOptions - The fill options object containing color.
+ * @vue-prop {Object} fillOptions - The fill options object containing color, and optionally a
+ *   `contrast` factor, which is shown as a second slider only for the fills that have one.
  */
 import { computed } from 'vue'
 import ColorPicker from './ColorPicker.vue'
+import SizePicker from './SizePicker.vue'
 import { useThemeStore } from '../../../store/theme'
 
 export default {
   name: 'FillControl',
   components: {
-    ColorPicker
+    ColorPicker,
+    SizePicker
   },
   props: {
     label: {
@@ -132,12 +145,20 @@ export default {
       emit('update', updatedFillOptions)
     }
 
+    const handleContrastChange = (newContrast) => {
+      emit('update', {
+        ...props.fillOptions,
+        contrast: newContrast
+      })
+    }
+
     return {
       currentColor,
       hexColor,
       backgroundStyle,
       previewStyle,
-      handleColorChange
+      handleColorChange,
+      handleContrastChange
     }
   }
 }

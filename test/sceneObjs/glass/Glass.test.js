@@ -223,8 +223,10 @@ describe('Glass', () => {
     expect(user.hover(50, 100)).toBeTruthy();   // Bottom edge
     expect(user.hover(0, 50)).toBeTruthy();     // Left edge
 
+    // Test hovering over the interior, which grabs the whole object
+    expect(user.hover(50, 50)).toBeTruthy();    // Center
+
     // Test hovering over non-object area
-    expect(user.hover(50, 50)).toBeFalsy();     // Center
     expect(user.hover(150, 150)).toBeFalsy();   // Outside
   });
 
@@ -248,9 +250,12 @@ describe('Glass', () => {
     expect(user.hover(-70, 70)).toBeTruthy();   // Bottom-left arc
     expect(user.hover(-70, -70)).toBeTruthy();  // Top-left arc
 
+    // Test hovering over the interior, which grabs the whole object
+    expect(user.hover(0, 0)).toBeTruthy();      // Center
+
     // Test hovering over non-object area
-    expect(user.hover(0, 0)).toBeFalsy();       // Center
     expect(user.hover(150, 150)).toBeFalsy();   // Outside
+    expect(user.hover(80, 80)).toBeFalsy();     // Inside the bounding box, outside the arcs
   });
 
   it('drags entire square by dragging sides', () => {
@@ -308,6 +313,58 @@ describe('Glass', () => {
         { x: 0, y: 100, arc: false }
       ]
     });
+  });
+
+  it('drags entire square by dragging its interior', () => {
+    // Create the square first
+    user.click(0, 0);
+    user.click(100, 0);
+    user.click(100, 100);
+    user.click(0, 100);
+    user.click(0, 0);
+
+    // Grab it well away from any edge
+    user.drag(50, 50, 90, 70);
+    expect(obj.serialize()).toEqual({
+      type: 'Glass',
+      path: [
+        { x: 40, y: 20, arc: false },
+        { x: 140, y: 20, arc: false },
+        { x: 140, y: 120, arc: false },
+        { x: 40, y: 120, arc: false }
+      ]
+    });
+  });
+
+  it('drags a concave shape only from where the glass actually is', () => {
+    // An L, so that part of the bounding box is outside the glass
+    obj.path = [
+      { x: 0, y: 0, arc: false },
+      { x: 100, y: 0, arc: false },
+      { x: 100, y: 40, arc: false },
+      { x: 40, y: 40, arc: false },
+      { x: 40, y: 100, arc: false },
+      { x: 0, y: 100, arc: false }
+    ];
+
+    expect(obj.isInsideShape({ x: 20, y: 20 })).toBe(true);   // the corner of the L
+    expect(obj.isInsideShape({ x: 70, y: 20 })).toBe(true);   // the arm
+    expect(obj.isInsideShape({ x: 20, y: 70 })).toBe(true);   // the leg
+    expect(obj.isInsideShape({ x: 70, y: 70 })).toBe(false);  // the notch, inside the bounding box
+    expect(obj.isInsideShape({ x: 150, y: 20 })).toBe(false); // outside altogether
+
+    // A horizontal ray from the test point through a vertex must not be counted twice
+    expect(obj.isInsideShape({ x: 20, y: 40 })).toBe(true);
+    expect(obj.isInsideShape({ x: 70, y: 40 })).toBe(false);
+  });
+
+  it('does not treat the interior as grabbable while still being drawn', () => {
+    user.click(0, 0);
+    user.click(100, 0);
+    user.click(100, 100);
+
+    expect(obj.notDone).toBe(true);
+    expect(obj.isInsideShape({ x: 60, y: 30 })).toBe(false);
   });
 
   it('shift + drags square horizontally and vertically', () => {

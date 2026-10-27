@@ -333,7 +333,7 @@
     },
     "WaveScreen": {
       "title": "Screen",
-      "description": "A line the field is read out along, plotted as a curve. Takes no part in the optics. Can instead show the pattern at infinity over the angles its endpoints subtend at the last surface."
+      "description": "A line the field is read out along, plotted as a curve. Takes no part in the optics. In far-field mode, a separate vertex sets the angular range of the pattern at infinity."
     },
     "WaveFocusProbe": {
       "title": "Focus probe",

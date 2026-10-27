@@ -56,6 +56,11 @@ class Ruler extends LineObjMixin(BaseSceneObj) {
     }, i18next.t('simulator:sceneObjs.common.lengthUnitInfo'), true);
   }
 
+  /** Format a ruler mark's distance label. */
+  formatScaleLabel(distance) {
+    return distance;
+  }
+
   draw(canvasRenderer, isAboveLight, isHovered) {
     if (isAboveLight) return;
 
@@ -135,7 +140,7 @@ class Ruler extends LineObjMixin(BaseSceneObj) {
         ctx.save();
         ctx.translate(x, y);
         ctx.rotate(text_ang);
-        ctx.fillText(i, 0, 0);
+        ctx.fillText(this.formatScaleLabel(i), 0, 0);
         ctx.restore();
       } else if (i % scale_step_mid == 0) {
         ctx.lineTo(this.p1.x + i * par_x + scale_direction * scale_len_mid * per_x, this.p1.y + i * par_y + scale_direction * scale_len_mid * per_y);

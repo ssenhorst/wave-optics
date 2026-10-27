@@ -78,6 +78,7 @@ export const WaveZonePlate = require('./sceneObjs/wave/WaveZonePlate.js').defaul
 export const WaveLens = require('./sceneObjs/wave/WaveLens.js').default;
 export const WaveScreen = require('./sceneObjs/wave/WaveScreen.js').default;
 export const WaveFocusProbe = require('./sceneObjs/wave/WaveFocusProbe.js').default;
+export const WaveRuler = require('./sceneObjs/wave/WaveRuler.js').default;
 export const Handle = require('./sceneObjs/special/Handle.js').default;
 export const CropBox = require('./sceneObjs/special/CropBox.js').default;
 export const ModuleObj = require('./sceneObjs/special/ModuleObj.js').default;
