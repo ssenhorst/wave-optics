@@ -370,6 +370,34 @@ export function sceneTimeSpan(model) {
   return latest + crossing;
 }
 
+/**
+ * The time shift that turns a far-field probe's clock into retarded time.
+ *
+ * A far field is sampled at a radius far outside the scene, where light
+ * arrives only after a delay of `n R / lambda` — thousands of cycles, and far
+ * outside any history window. Evaluating the probe at `t + shift` instead,
+ * with `shift = n (R - r_max) / lambda`, where `r_max` is the distance from the
+ * far-field origin to the farthest site lighting the probe's subspace, means
+ * every history lookup it makes lands at or before `t`, and no further back
+ * than `2 n r_max / lambda`: the spread of delays across the surface itself.
+ * The far-field plot at time `t` then shows the light that left the last
+ * surface at about time `t`.
+ *
+ * @param {Object} model - As built by `buildWaveModel`.
+ * @param {number} subspaceIndex - The subspace the far-field probes lie in.
+ * @param {{x: number, y: number}} origin - The far-field origin.
+ * @param {number} radius - The distance of the probes from the origin.
+ * @returns {number} In optical cycles.
+ */
+export function farFieldTimeShift(model, subspaceIndex, origin, radius) {
+  const subspace = model.subspaces[subspaceIndex];
+  let reach = 0;
+  for (const site of subspace.surfaceSamples) {
+    reach = Math.max(reach, Math.hypot(site.x - origin.x, site.y - origin.y));
+  }
+  return subspace.refractiveIndex * (radius - reach) / model.settings.wavelength;
+}
+
 /** Coherence times a time average over noise spans, at the least. */
 export const NOISE_AVERAGE_COHERENCE_TIMES = 200;
 

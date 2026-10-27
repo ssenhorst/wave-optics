@@ -19,7 +19,8 @@ import LineObjMixin from '../LineObjMixin.js';
 import geometry from '../../geometry.js';
 import i18next from 'i18next';
 import { amplitudePhaseColor } from '../../waveOptics/oklch.js';
-import { collectInterfaces } from '../../waveOptics/waveSceneModel.js';
+import { collectInterfaces, subspaceIndexAt } from '../../waveOptics/waveSceneModel.js';
+import { farFieldTimeShift } from '../../waveOptics/timeDomain.js';
 import {
   fieldAt, fieldSerial, currentModel, drawLabel, MEASURE_COLOR, VIRTUAL_COLOR
 } from './waveMeasurement.js';
@@ -352,7 +353,7 @@ class WaveScreen extends LineObjMixin(BaseSceneObj) {
       axis.push(angle * 180 / Math.PI);
     }
     return {
-      probes, anchors, normals, axis, origin, drawRadius,
+      probes, anchors, normals, axis, origin, drawRadius, probeRadius,
       axisLabel: i18next.t('simulator:waveSceneObjs.common.axisAngle'),
       isAngular: true,
     };
@@ -363,14 +364,9 @@ class WaveScreen extends LineObjMixin(BaseSceneObj) {
     return false;
   }
 
-  /**
-   * Whether the screen reads the time-dependent field. The far field is a
-   * limit at infinite distance, which a pulse never reaches in finite time, so
-   * it keeps showing the time-harmonic pattern.
-   * @returns {boolean}
-   */
+  /** @returns {boolean} Whether the screen reads the time-dependent field. */
   isTimeResolved() {
-    return Boolean(this.scene?.simulator?.isTimeMode) && !this.farField;
+    return Boolean(this.scene?.simulator?.isTimeMode);
   }
 
   /** Whether the plot shows the field at the current instant. */
@@ -390,13 +386,40 @@ class WaveScreen extends LineObjMixin(BaseSceneObj) {
 
   /**
    * The points the field is read at, so the time-domain histories cover the
-   * delays to them even where the screen reaches outside the view. A far field
-   * is not read in time, so it needs none.
+   * delays to them even where the screen reaches outside the view.
+   *
+   * A far field is read in retarded time (see `farFieldTimeShift`), whose
+   * lookups reach back by the spread of delays across the last surface. A box
+   * around the far-field origin as large as the surface is deep and wide
+   * stands for that, so the window covers it however curved the surface is.
    * @returns {Array<{x: number, y: number}>}
    */
   getMeasurementPoints() {
-    if (this.farField || !this.isValid()) return [];
-    return [this.p1, this.p2];
+    if (!this.isValid()) return [];
+    if (!this.farField) return [this.p1, this.p2];
+    const origin = this.farFieldOrigin();
+    const range = this.lastSurface()?.getAxialRange();
+    if (!origin || !range) return [];
+    const reach = Math.hypot(range.max - range.min, origin.halfWidth);
+    return [
+      { x: origin.x - reach, y: origin.y - reach },
+      { x: origin.x + reach, y: origin.y + reach },
+    ];
+  }
+
+  /**
+   * The probes to evaluate in a time-dependent scene: the far-field ones carry
+   * the shift that puts them on retarded time.
+   * @private
+   */
+  timeProbes(layout) {
+    if (!this.farField) return layout.probes;
+    const model = currentModel(this.scene);
+    const first = layout.probes[0];
+    const axisSign = model.settings?.axisSign ?? 1;
+    const j = subspaceIndexAt(model.interfaces, first.x, first.y, axisSign);
+    const timeShift = farFieldTimeShift(model, j, layout.origin, layout.probeRadius);
+    return layout.probes.map((point) => ({ x: point.x, y: point.y, timeShift }));
   }
 
   /**
@@ -433,11 +456,11 @@ class WaveScreen extends LineObjMixin(BaseSceneObj) {
     const count = this.samples();
     let field;
     if (this.showsInstant()) {
-      field = this.scene.simulator.timeFieldAt(layout.probes);
+      field = this.scene.simulator.timeFieldAt(this.timeProbes(layout));
     } else if (this.isTimeResolved()) {
       // A time average has no phase; the amplitude is the root of the mean
       // intensity, so the intensity plot shows the mean intensity itself.
-      const intensities = this.scene.simulator.timeAveragedIntensityAt(layout.probes);
+      const intensities = this.scene.simulator.timeAveragedIntensityAt(this.timeProbes(layout));
       if (!intensities) return null;
       field = new Float64Array(count * 2);
       for (let i = 0; i < count; i++) field[i * 2] = Math.sqrt(intensities[i]);
@@ -691,11 +714,14 @@ class WaveScreen extends LineObjMixin(BaseSceneObj) {
 
     const lines = [i18next.t(`simulator:waveSceneObjs.common.plot${this.plotModeKey()}`)];
     if (this.isTimeResolved()) {
-      lines.push(this.showsInstant()
-        ? i18next.t('simulator:waveSceneObjs.common.plotAtTime', {
-          time: this.scene.simulator.time.toFixed(1),
-        })
-        : i18next.t('simulator:waveSceneObjs.common.plotTimeAveraged'));
+      const time = this.scene.simulator.time.toFixed(1);
+      if (!this.showsInstant()) {
+        lines.push(i18next.t('simulator:waveSceneObjs.common.plotTimeAveraged'));
+      } else if (this.farField) {
+        lines.push(i18next.t('simulator:waveSceneObjs.common.plotAtRetardedTime', { time }));
+      } else {
+        lines.push(i18next.t('simulator:waveSceneObjs.common.plotAtTime', { time }));
+      }
     }
     drawLabel(canvasRenderer, [
       ...lines,

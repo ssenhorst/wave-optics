@@ -373,7 +373,7 @@ void main() {
 const PROBE_TIME_FRAGMENT_SHADER = `#version 300 es
 ${TIME_SUMMATION_GLSL}
 
-uniform sampler2D uProbes;      // (x, y, subspace, -)
+uniform sampler2D uProbes;      // (x, y, subspace, time shift)
 uniform sampler2D uProbeTimes;  // (t, -, -, -)
 uniform int uProbeWidth;
 uniform int uTimeWidth;
@@ -387,7 +387,7 @@ void main() {
   vec4 probe = texelFetch(uProbes, ivec2(frag.x % uProbeWidth, frag.x / uProbeWidth), 0);
   if (int(probe.z + 0.5) != uSubspace) discard;
   int k = frag.y + uTimeOffset;
-  float t = texelFetch(uProbeTimes, ivec2(k % uTimeWidth, k / uTimeWidth), 0).x;
+  float t = texelFetch(uProbeTimes, ivec2(k % uTimeWidth, k / uTimeWidth), 0).x + probe.w;
   fragColor = vec4(sumFieldAtTime(probe.xy, t), 0.0, 1.0);
 }
 `;
@@ -981,7 +981,12 @@ class WaveFieldEngineWebGL2 {
    * refills them for its own time.
    *
    * @param {Object} model - As built by `buildWaveModel`.
-   * @param {Array<{x: number, y: number}>} points
+   * A point may carry a `timeShift`, in cycles, added to every instant it is
+   * evaluated at. It must keep that point's history lookups at or before the
+   * instant itself, as {@link farFieldTimeShift} does, since the histories
+   * are only advanced to the instants as given.
+   *
+   * @param {Array<{x: number, y: number, timeShift?: number}>} points
    * @param {number[]} times - In increasing order, in optical cycles.
    * @returns {Float32Array} For each instant, for each point, `(Re, Im)` of `Psi`.
    */
@@ -1001,6 +1006,7 @@ class WaveFieldEngineWebGL2 {
       buffer[at] = points[i].x;
       buffer[at + 1] = points[i].y;
       buffer[at + 2] = subspaceIndexAt(model.interfaces, points[i].x, points[i].y, axisSign);
+      buffer[at + 3] = points[i].timeShift ?? 0;
     });
     this.probeTimes.fill(times.length, (i, buffer, at) => { buffer[at] = times[i]; });
 

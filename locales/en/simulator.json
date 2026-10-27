@@ -1058,7 +1058,7 @@
       "plotPeak": "peak |U| = {{value}}",
       "plotHeight": "Plot height (px)",
       "farField": "Far field",
-      "farFieldInfo": "Show the pattern at infinity instead of the field here, over the angles the endpoints subtend at the centre of the last surface. Drawn as a dashed arc because nothing in the scene is there. In a scene with time-dependent sources the far field still shows the time-harmonic pattern: light never reaches infinity in a finite time.",
+      "farFieldInfo": "Show the pattern at infinity instead of the field here, over the angles the endpoints subtend at the centre of the last surface. Drawn as a dashed arc because nothing in the scene is there. In a scene with time-dependent sources the far field runs on retarded time: at a time t it shows the light that left the last surface at about t, since light would otherwise take forever to get there.",
       "axisPosition": "across",
       "axisAngle": "angle",
       "screenSamples": "Samples",
@@ -1102,7 +1102,8 @@
       },
       "timeAveragingInfo": "The sources in this scene vary in time. Time-averaged shows what a slow detector records: the intensity averaged over the scene's whole time span, or over many coherence times when there is noise, so that interference between mutually incoherent light washes out. At this instant shows the intensity at the time on the clock, and moves as the animation plays.",
       "plotTimeAveraged": "time-averaged",
-      "plotAtTime": "at t = {{time}} cycles"
+      "plotAtTime": "at t = {{time}} cycles",
+      "plotAtRetardedTime": "left the surface at t ≈ {{time}} cycles"
     },
     "eqnInfo": {
       "examples": "For example:",

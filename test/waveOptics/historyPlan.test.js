@@ -369,3 +369,40 @@ describe('time averaging and measurements', () => {
     expect(planHistory(model).window).toBeGreaterThan(without + 200);
   });
 });
+
+describe('the far field in retarded time', () => {
+  test('every lookup lands in the exact part of the histories, at every angle', () => {
+    const scene = makeScene();
+    const wave = new WavePointSource(scene);
+    Object.assign(wave, { x: -200, y: 0, amplitude: 1, signalType: 'pulse', signalDuration: 12 });
+    scene.objs.push(wave);
+    addInterface(scene, 0, 80, 1.5);
+    addInterface(scene, 120, 80, 1);
+    const screen = new WaveScreen(scene);
+    Object.assign(screen, { p1: { x: 600, y: -300 }, p2: { x: 600, y: 300 }, farField: true, sampleCount: 9 });
+    scene.objs.push(screen);
+    const model = buildWaveModel(scene, { resolution: 64 });
+    scene.simulator = { lastModel: model, isTimeMode: true, fieldSerial: 0 };
+
+    const layout = screen.samplePoints();
+    const probes = screen.timeProbes(layout);
+    const shift = probes[0].timeShift;
+    expect(shift).toBeGreaterThan(1000);
+
+    // About when the pulse leaves the slab: 200 in air, then 120 in glass.
+    const time = (200 + 1.5 * 120) / WAVELENGTH;
+    const emulator = new StreamingEmulator(model);
+    emulator.advance(time);
+    let worst = 0;
+    let scale = 0;
+    for (const probe of probes) {
+      const streamed = emulator.fieldAt(probe, time + shift);
+      expect(streamed.exact).toBe(true);
+      const exact = computeModelFieldAtTime(model, [probe], time + shift);
+      worst = Math.max(worst, Math.hypot(streamed.re - exact[0], streamed.im - exact[1]));
+      scale = Math.max(scale, Math.hypot(exact[0], exact[1]));
+    }
+    expect(scale).toBeGreaterThan(0);
+    expect(worst / scale).toBeLessThan(0.02);
+  });
+});
