@@ -334,7 +334,7 @@ const CHAIN_TIME_FRAGMENT_SHADER = `#version 300 es
 ${TIME_SUMMATION_GLSL}
 
 uniform sampler2D uSiteGeometry;      // (x, y, nx, ny) of this interface
-uniform sampler2D uSiteTransmission;  // (Re t, Im t, ds, -)
+uniform sampler2D uSiteTransmission;  // (Re t, Im t, ds, delay in cycles)
 uniform int uSiteCount;
 uniform int uSiteWidth;               // row width of the two site tables
 uniform int uSiteRows;                // rows per block of the history written
@@ -358,7 +358,8 @@ void main() {
   ivec2 uv = ivec2(site % uSiteWidth, site / uSiteWidth);
   vec4 geometry = texelFetch(uSiteGeometry, uv, 0);
   vec4 transmission = texelFetch(uSiteTransmission, uv, 0);
-  vec2 incident = sumFieldAtTime(geometry.xy, tau);
+  // The site re-radiates what reached it its own delay ago.
+  vec2 incident = sumFieldAtTime(geometry.xy, tau - transmission.w);
   fragColor = vec4(cmul(transmission.xy, incident) * transmission.z, 0.0, 1.0);
 }
 `;
@@ -709,6 +710,8 @@ class WaveFieldEngineWebGL2 {
       buffer[at] = sites[i].tRe;
       buffer[at + 1] = sites[i].tIm;
       buffer[at + 2] = sites[i].ds;
+      // Only the time-domain chain reads this; the time-harmonic one ignores it.
+      buffer[at + 3] = sites[i].delay ?? 0;
     });
     tables.siteWeights.allocate(sites.length);
 

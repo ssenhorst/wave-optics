@@ -20,11 +20,19 @@ import geometry from '../../geometry.js';
 import i18next from 'i18next';
 import { evaluateLatex } from '../../equation.js';
 import { wavelengthInMedium } from '../../waveOptics/conventions.js';
-import { SIGNAL_DEFAULTS } from '../../waveOptics/signals.js';
+import { SIGNAL_DEFAULTS, resolveSignal } from '../../waveOptics/signals.js';
 import { populateSignalObjBar, signalPropertySchema } from './waveSignalControls.js';
 import {
   equationInfo, amplitudeExamples, phaseExamples
 } from './waveEquationInfo.js';
+
+/** The spatial coherence choices for a noise signal, with display names. */
+function spatialCoherenceOptions() {
+  return {
+    coherent: i18next.t('simulator:waveSceneObjs.common.spatialCoherences.coherent'),
+    partial: i18next.t('simulator:waveSceneObjs.common.spatialCoherences.partial'),
+  };
+}
 
 /**
  * A line of time-harmonic point sources: the wave-optics counterpart of a beam.
@@ -49,6 +57,10 @@ import {
  * @property {number} amplitude - Overall amplitude, per unit length.
  * @property {string} eqnAmplitude - Amplitude as a function of `u`, in LaTeX.
  * @property {string} eqnPhase - Phase in radians as a function of `u`, in LaTeX.
+ * @property {string} spatialCoherence - With a noise signal, 'coherent' makes the
+ *   whole line fluctuate as one, and 'partial' lets points further apart than
+ *   `coherenceLength` fluctuate independently.
+ * @property {number} coherenceLength - In scene units, for 'partial'.
  */
 class WaveLineSource extends LineObjMixin(BaseSceneObj) {
   static type = 'WaveLineSource';
@@ -59,7 +71,9 @@ class WaveLineSource extends LineObjMixin(BaseSceneObj) {
     amplitude: 1,
     eqnAmplitude: '1',
     eqnPhase: '0',
-    ...SIGNAL_DEFAULTS
+    ...SIGNAL_DEFAULTS,
+    spatialCoherence: 'coherent',
+    coherenceLength: 40
   };
 
   static getDescription(objData, scene, detailed = false) {
@@ -87,6 +101,15 @@ class WaveLineSource extends LineObjMixin(BaseSceneObj) {
       { key: 'eqnAmplitude', type: 'equation', label: 'A(u)', variables: ['u'], info: help.amplitude },
       { key: 'eqnPhase', type: 'equation', label: 'φ(u)', variables: ['u'], info: help.phase },
       ...signalPropertySchema(),
+      {
+        key: 'spatialCoherence', type: 'dropdown',
+        label: i18next.t('simulator:waveSceneObjs.common.spatialCoherence'),
+        options: spatialCoherenceOptions(),
+      },
+      {
+        key: 'coherenceLength', type: 'number',
+        label: i18next.t('simulator:waveSceneObjs.common.coherenceLength'),
+      },
     ];
   }
 
@@ -105,6 +128,25 @@ class WaveLineSource extends LineObjMixin(BaseSceneObj) {
       obj.eqnPhase = value;
     }, help.phase);
     populateSignalObjBar(objBar, this);
+
+    // Only a random signal can be more or less coherent along the line; a
+    // deterministic one is the same function of time at every point.
+    if (this.signalType === 'noise') {
+      objBar.createDropdown(
+        i18next.t('simulator:waveSceneObjs.common.spatialCoherence'),
+        this.spatialCoherence, spatialCoherenceOptions(),
+        function (obj, value) { obj.spatialCoherence = value; },
+        '<p>' + i18next.t('simulator:waveSceneObjs.common.spatialCoherenceInfo') + '</p>',
+        true
+      );
+      if (this.spatialCoherence === 'partial') {
+        objBar.createNumber(
+          i18next.t('simulator:waveSceneObjs.common.coherenceLength'), 1, 400, 1, this.coherenceLength,
+          function (obj, value) { obj.coherenceLength = value; },
+          '<p>' + i18next.t('simulator:waveSceneObjs.common.coherenceLengthInfo') + '</p>'
+        );
+      }
+    }
   }
 
   draw(canvasRenderer, isAboveLight, isHovered) {
@@ -177,6 +219,8 @@ class WaveLineSource extends LineObjMixin(BaseSceneObj) {
 
     const lambda = settings?.wavelength > 0 ? settings.wavelength : 20;
     const count = this.sampleCount(settings, samplesPerWavelength, length);
+    const spacing = this.noiseSpacing(settings);
+    const signal = spacing ? resolveSignal(this) : null;
     const step = length / count;
     const dirX = (this.p2.x - this.p1.x) / length;
     const dirY = (this.p2.y - this.p1.y) / length;
@@ -205,12 +249,15 @@ class WaveLineSource extends LineObjMixin(BaseSceneObj) {
       // `step` is the arc length this sample stands for; it makes the emitted
       // field independent of the sampling density.
       const weight = this.amplitude * localAmplitude * step;
-      sources.push({
+      const source = {
         x: centerX + dirX * u,
         y: centerY + dirY * u,
         re: weight * Math.cos(localPhase),
         im: weight * Math.sin(localPhase)
-      });
+      };
+      // Each sample samples the same random field at its own place along it.
+      if (spacing) source.signal = { ...signal, position: u / spacing };
+      sources.push(source);
     }
     return sources;
   }
@@ -235,6 +282,24 @@ class WaveLineSource extends LineObjMixin(BaseSceneObj) {
     return Math.max(1, Math.ceil(span * samplesPerWavelength / mediumWavelength));
   }
 
+  /**
+   * The knot spacing of the line's noise field in scene units, or null when
+   * the whole line shares one signal.
+   *
+   * The spacing is held to at least half a wavelength. Below that the noise is
+   * finer than any wave can carry, and its radiated intensity would depend on
+   * how densely the line is sampled — an accuracy setting would become a
+   * physical one, exactly what the arc-length weighting exists to prevent.
+   *
+   * @param {Object} settings - Resolved wave settings.
+   * @returns {number|null}
+   */
+  noiseSpacing(settings) {
+    if (this.signalType !== 'noise' || this.spatialCoherence !== 'partial') return null;
+    const minimum = wavelengthInMedium(settings.wavelength, settings.refractiveIndex) / 2;
+    return Math.max(Number.isFinite(this.coherenceLength) ? this.coherenceLength : 0, minimum);
+  }
+
   /** @returns {number} The number of wave sources this object wants. */
   getWaveSourceCount(context) {
     if (!this.p1 || !this.p2 || !(this.amplitude > 0)) return 0;
@@ -245,6 +310,7 @@ class WaveLineSource extends LineObjMixin(BaseSceneObj) {
     super.scale(scale, center);
     // The amplitude is per unit length, so it dilutes as the line grows.
     this.amplitude /= scale;
+    this.coherenceLength *= scale;
     return true;
   }
 

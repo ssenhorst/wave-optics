@@ -230,7 +230,7 @@ export function computeModelFieldAt(model, points) {
  * multiplied by its source's envelope at the retarded time. A site on an
  * interface re-radiates the field that arrived at it, so its envelope is the
  * previous subspace's field at the site, evaluated earlier by the time the
- * light takes from the site to the observer.
+ * light takes from the site to the observer and by the site's own delay.
  *
  * This is the reference implementation and evaluates that recursion directly,
  * with no history buffers and so no interpolation. The cost is the product of
@@ -275,7 +275,11 @@ export function computeModelFieldAtTime(model, points, time) {
         const dy = y - site.y;
         const distance = Math.hypot(dx, dy);
         const r = Math.max(distance, rMin);
-        const incident = evaluate(j - 1, site.x, site.y, t - delayPerLength * distance);
+        // A site re-radiates what reached it a delay ago: the light's travel
+        // time from the site, plus the delay its transmission phase stands for.
+        const incident = evaluate(
+          j - 1, site.x, site.y, t - delayPerLength * distance - (site.delay ?? 0)
+        );
         // transmission * incident field * arc length, as in propagateChain.
         accumulate(
           rayleighSommerfeldKernel(k * r, (site.nx * dx + site.ny * dy) / r, k),

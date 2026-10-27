@@ -28,6 +28,7 @@
 import Scene from '../../src/core/Scene.js';
 import WavePointSource from '../../src/core/sceneObjs/wave/WavePointSource.js';
 import WavePlaneWave from '../../src/core/sceneObjs/wave/WavePlaneWave.js';
+import WaveLineSource from '../../src/core/sceneObjs/wave/WaveLineSource.js';
 import WaveInterface from '../../src/core/sceneObjs/wave/WaveInterface.js';
 import { buildWaveModel, isTimeDependent } from '../../src/core/waveOptics/waveSceneModel.js';
 import {
@@ -36,7 +37,7 @@ import {
 import { greensFunction } from '../../src/core/waveOptics/hankel.js';
 import { wavenumber } from '../../src/core/waveOptics/conventions.js';
 import {
-  resolveSignal, signalEnvelope, hash32, SIGNAL_DEFAULTS
+  resolveSignal, signalEnvelope, noiseEnvelope, hash32, SIGNAL_DEFAULTS
 } from '../../src/core/waveOptics/signals.js';
 
 const WAVELENGTH = 20;
@@ -103,7 +104,7 @@ describe('the signal model', () => {
       signalType: 'pulse', signalDelay: 12, signalDuration: 3,
     });
     const restored = new WavePointSource(scene, source.serialize());
-    expect(resolveSignal(restored)).toEqual({ type: 'pulse', delay: 12, duration: 3, seed: 0 });
+    expect(resolveSignal(restored)).toEqual({ type: 'pulse', delay: 12, duration: 3, seed: 0, position: 0 });
   });
 
   test('rejects unknown types and clamps the duration', () => {
@@ -322,5 +323,142 @@ describe('retarded evaluation', () => {
       // averages to a few percent of that.
       expect(Math.abs(averagedAxisIntensity(4, 9) - 2)).toBeLessThan(0.2);
     });
+  });
+});
+
+describe('the delay of a transmission phase', () => {
+  /** An index-matched interface carrying a linear phase ramp, which steers a beam. */
+  function rampScene(rampPerUnit) {
+    const scene = makeScene();
+    const wave = new WavePlaneWave(scene);
+    Object.assign(wave, {
+      x: -100, y: 0, amplitude: 1, angle: 0, signalType: 'pulse', signalDelay: 0, signalDuration: 6,
+    });
+    scene.objs.push(wave);
+    const surface = addInterface(scene, { x: 0, y0: -600, y1: 600, indexAfter: 1 });
+    surface.eqnPhase = `${rampPerUnit}\\cdot y`;
+    return scene;
+  }
+
+  test('is the phase over 2 pi, counted from the thinnest point', () => {
+    const ramp = 0.05;
+    const model = buildWaveModel(rampScene(ramp));
+    const sites = model.subspaces[1].surfaceSamples;
+    expect(Math.min(...sites.map((site) => site.delay))).toBe(0);
+    const first = sites[0];
+    for (const site of sites) {
+      expect(site.delay).toBeCloseTo(ramp * (site.y - first.y) / (2 * Math.PI), 9);
+    }
+  });
+
+  test('a uniform phase adds no delay at all', () => {
+    const scene = rampScene(0);
+    scene.objs[1].eqnPhase = '2';
+    const sites = buildWaveModel(scene).subspaces[1].surfaceSamples;
+    expect(sites.every((site) => site.delay === 0)).toBe(true);
+  });
+
+  test('a steered pulse arrives when its phase front does', () => {
+    // A ramp of k sin(theta) steers the beam by theta. The pulse travels with
+    // the phase front, so it arrives at the stationary point's total delay:
+    // the travel time plus the phase that site adds, over 2 pi.
+    const sinTheta = 0.2;
+    const ramp = K * sinTheta;
+    const model = buildWaveModel(rampScene(ramp));
+    const sites = model.subspaces[1].surfaceSamples;
+    const yMin = Math.min(...sites.map((site) => site.y));
+
+    const point = { x: 400, y: 0 };
+    const tanTheta = sinTheta / Math.sqrt(1 - sinTheta * sinTheta);
+    const stationary = point.y - point.x * tanTheta;
+    const path = Math.hypot(point.x, point.y - stationary);
+    const arrival = 100 / WAVELENGTH + ramp * (stationary - yMin) / (2 * Math.PI) + path / WAVELENGTH;
+
+    const result = trace(model, point, arrival - 8, arrival + 8, 0.5);
+    expect(Math.abs(refinedPeakTime(result) - arrival)).toBeLessThan(0.3);
+  });
+});
+
+describe('spatial coherence of noise', () => {
+  test('a point source sees one knot, and the field keeps unit magnitude between knots', () => {
+    const at0 = noiseEnvelope(12.3, 5, 7, 0);
+    const signal = { type: 'noise', delay: 0, duration: 5, seed: 7, position: 0 };
+    expect(signalEnvelope(signal, 12.3)).toEqual(at0);
+    for (let position = -3; position < 3; position += 0.137) {
+      const e = noiseEnvelope(40.1, 5, 7, position);
+      expect(Math.hypot(e.re, e.im)).toBeCloseTo(1, 9);
+    }
+  });
+
+  test('points close together fluctuate together, points far apart do not', () => {
+    const correlation = (separation) => {
+      let re = 0;
+      let im = 0;
+      let count = 0;
+      for (let i = 0; i < 4000; i++) {
+        const t = i * 1.3;
+        const position = (i % 37) * 0.71;
+        const a = noiseEnvelope(t, 5, 2, position);
+        const b = noiseEnvelope(t, 5, 2, position + separation);
+        re += a.re * b.re + a.im * b.im;
+        im += a.im * b.re - a.re * b.im;
+        count++;
+      }
+      return Math.hypot(re, im) / count;
+    };
+    expect(correlation(0.02)).toBeGreaterThan(0.95);
+    expect(correlation(3)).toBeLessThan(0.1);
+  });
+
+  /** A noise line source ten wavelengths long, centred on the origin. */
+  function noisyLine({ spatialCoherence, coherenceLength = WAVELENGTH, sourceDensity = 8 }) {
+    const scene = makeScene();
+    scene.waveOptics.sourceDensity = sourceDensity;
+    const line = new WaveLineSource(scene);
+    Object.assign(line, {
+      p1: { x: 0, y: -100 }, p2: { x: 0, y: 100 }, amplitude: 1,
+      signalType: 'noise', signalDuration: 5, spatialCoherence, coherenceLength,
+    });
+    scene.objs.push(line);
+    return buildWaveModel(scene);
+  }
+
+  /** The intensity averaged over many coherence times, at each point. */
+  function averagedIntensity(model, points) {
+    const sums = points.map(() => 0);
+    const count = 400;
+    for (let i = 0; i < count; i++) {
+      const field = computeModelFieldAtTime(model, points, i * 2.5);
+      points.forEach((_, p) => { sums[p] += field[p * 2] ** 2 + field[p * 2 + 1] ** 2; });
+    }
+    return sums.map((sum) => sum / count);
+  }
+
+  // On the axis, and at the coherent beam's first null, sin(theta) = lambda / L.
+  const R = 2000;
+  const NULL_SIN = WAVELENGTH / 200;
+  const POINTS = [
+    { x: R, y: 0 },
+    { x: R * Math.sqrt(1 - NULL_SIN ** 2), y: R * NULL_SIN },
+  ];
+
+  test('a coherent line keeps its narrow beam, a partially coherent one spreads it', () => {
+    const [axisC, nullC] = averagedIntensity(noisyLine({ spatialCoherence: 'coherent' }), POINTS);
+    const [axisP, nullP] = averagedIntensity(noisyLine({ spatialCoherence: 'partial' }), POINTS);
+    expect(nullC / axisC).toBeLessThan(0.05);
+    expect(nullP / axisP).toBeGreaterThan(0.5);
+  });
+
+  test('a partially coherent line does not depend on how densely it is sampled', () => {
+    const [coarse] = averagedIntensity(noisyLine({ spatialCoherence: 'partial', sourceDensity: 8 }), POINTS);
+    const [fine] = averagedIntensity(noisyLine({ spatialCoherence: 'partial', sourceDensity: 16 }), POINTS);
+    expect(Math.abs(fine / coarse - 1)).toBeLessThan(0.05);
+  });
+
+  test('a coherence length below half a wavelength is held there', () => {
+    const tiny = noisyLine({ spatialCoherence: 'partial', coherenceLength: 1 });
+    const half = noisyLine({ spatialCoherence: 'partial', coherenceLength: WAVELENGTH / 2 });
+    const positions = (model) => model.subspaces[0].primaries.map((source) => source.signal.position);
+    expect(positions(tiny)).toEqual(positions(half));
   });
 });

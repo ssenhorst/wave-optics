@@ -211,7 +211,7 @@ class StreamingEmulator {
       for (let m = from; m <= move.newest; m++) {
         const tau = this.state.epoch + m * this.plan.step;
         sites.forEach((site, i) => {
-          const incident = this.sum(j - 1, site.x, site.y, tau);
+          const incident = this.sum(j - 1, site.x, site.y, tau - (site.delay ?? 0));
           this.histories[j][i][slotOf(m, this.plan.slots)] = {
             re: (site.tRe * incident.re - site.tIm * incident.im) * site.ds,
             im: (site.tRe * incident.im + site.tIm * incident.re) * site.ds,

@@ -452,13 +452,20 @@ class WaveInterface extends LineObjMixin(BaseSceneObj) {
    * separately, so a fine phase grating correctly loses contrast towards its
    * mean rather than keeping a full-amplitude phase that is no longer there.
    *
+   * The phase that sets the cell's time delay is averaged separately, see
+   * {@link WaveInterface#getSurfaceSamples}: the phase of the averaged
+   * transmission is wrapped, and a delay cannot be.
+   *
    * @param {number} y - Transverse position, measured from the centre.
    * @param {number} cellWidth - The width of the sampling cell, in scene units.
-   * @returns {{amplitude: number, phase: number}}
+   * @returns {{amplitude: number, phase: number, delayPhase: number}}
    */
   averagedTransmission(y, cellWidth) {
     const feature = this.minimumFeatureSize();
-    if (!(feature > 0)) return this.transmissionAt(y);
+    if (!(feature > 0)) {
+      const { amplitude, phase } = this.transmissionAt(y);
+      return { amplitude, phase, delayPhase: phase };
+    }
 
     // The sub-sample count falls out of how the feature compares with the cell,
     // so a profile far coarser than the sampling asks for a single sub-sample
@@ -467,18 +474,29 @@ class WaveInterface extends LineObjMixin(BaseSceneObj) {
       MAX_SUBSAMPLES,
       Math.max(1, Math.ceil(SUBSAMPLES_PER_FEATURE * cellWidth / feature))
     );
-    if (count === 1) return this.transmissionAt(y);
+    if (count === 1) {
+      const { amplitude, phase } = this.transmissionAt(y);
+      return { amplitude, phase, delayPhase: phase };
+    }
     let re = 0;
     let im = 0;
+    // The delay follows the thickness the phase stands for, so it is the
+    // transmission-weighted mean of the unwrapped phases across the cell.
+    let weightedPhase = 0;
+    let weight = 0;
     for (let i = 0; i < count; i++) {
       const offset = ((i + 0.5) / count - 0.5) * cellWidth;
       const { amplitude, phase } = this.transmissionAt(y + offset);
       re += amplitude * Math.cos(phase);
       im += amplitude * Math.sin(phase);
+      weightedPhase += amplitude * phase;
+      weight += amplitude;
     }
+    const phase = Math.atan2(im, re);
     return {
       amplitude: Math.hypot(re, im) / count,
-      phase: Math.atan2(im, re),
+      phase,
+      delayPhase: weight > 0 ? weightedPhase / weight : phase,
     };
   }
 
@@ -533,8 +551,17 @@ class WaveInterface extends LineObjMixin(BaseSceneObj) {
    * the complex transmission there. The incident field is filled in later by
    * the propagation chain.
    *
+   * It also carries the time delay its phase stands for, in optical cycles.
+   * The phase of a transmission is read as an optical thickness without
+   * dispersion, which delays the envelope by exactly as much as the carrier:
+   * `phi / 2 pi` cycles. The delays are counted from the thinnest point, so
+   * none is negative — re-radiating before the light arrived would be
+   * acausal — and the offset that removes is a uniform delay, which changes
+   * when a pulse arrives but nothing else about it.
+   *
    * @param {Object} context
-   * @returns {Array<{x: number, y: number, nx: number, ny: number, ds: number, tRe: number, tIm: number}>}
+   * @returns {Array<{x: number, y: number, nx: number, ny: number, ds: number,
+   *   tRe: number, tIm: number, delay: number}>}
    */
   getSurfaceSamples(context) {
     this.error = null;
@@ -564,15 +591,16 @@ class WaveInterface extends LineObjMixin(BaseSceneObj) {
       let slope;
       let amplitude;
       let phase;
+      let delayPhase;
       try {
         z = this.zAt(y);
         slope = this.slopeAt(y);
-        ({ amplitude, phase } = this.averagedTransmission(local, step));
+        ({ amplitude, phase, delayPhase } = this.averagedTransmission(local, step));
       } catch (e) {
         this.error = e.toString();
         return [];
       }
-      if (![z, slope, amplitude, phase].every(Number.isFinite)) continue;
+      if (![z, slope, amplitude, phase, delayPhase].every(Number.isFinite)) continue;
 
       // The surface is z = f(y), so its tangent is (f', 1) and the forward
       // normal is (1, -f') normalised. "Forward" is the direction the light is
@@ -588,8 +616,13 @@ class WaveInterface extends LineObjMixin(BaseSceneObj) {
         ds: step * norm,
         tRe: amplitude * Math.cos(phase),
         tIm: amplitude * Math.sin(phase),
+        delay: delayPhase / (2 * Math.PI),
       });
     }
+
+    let earliest = Infinity;
+    for (const sample of samples) earliest = Math.min(earliest, sample.delay);
+    for (const sample of samples) sample.delay -= earliest;
     return samples;
   }
 

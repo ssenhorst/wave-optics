@@ -121,7 +121,8 @@ export function viewDelay(model, j) {
 
 /**
  * The longest delay of a chain-pass lookup into subspace `j`'s history: from
- * any of its sites to any site of the next interface.
+ * any of its sites to any site of the next interface, plus the longest delay
+ * the next interface's own transmission adds.
  * @param {Object} model
  * @param {number} j
  * @returns {number} In optical cycles.
@@ -129,7 +130,9 @@ export function viewDelay(model, j) {
 export function chainDelay(model, j) {
   const next = model.subspaces[j + 1]?.surfaceSamples ?? [];
   if (next.length === 0) return 0;
-  return maxDelayBetween(model, j, model.subspaces[j].surfaceSamples, next);
+  let siteDelay = 0;
+  for (const site of next) siteDelay = Math.max(siteDelay, site.delay ?? 0);
+  return maxDelayBetween(model, j, model.subspaces[j].surfaceSamples, next) + siteDelay;
 }
 
 /**

@@ -85,6 +85,9 @@ const GAUSSIAN_FWHM = 2 * Math.LN2;
  * @property {number} delay - In optical cycles.
  * @property {number} duration - In optical cycles.
  * @property {number} seed - A non-negative integer.
+ * @property {number} [position=0] - For noise only: where along an extended
+ *   source this sample sits, in coherence lengths. Samples a coherence length
+ *   or more apart fluctuate independently; see {@link noiseEnvelope}.
  */
 
 /**
@@ -99,7 +102,7 @@ export function resolveSignal(obj) {
     ? Math.max(obj.signalDuration, MIN_SIGNAL_DURATION)
     : SIGNAL_DEFAULTS.signalDuration;
   const seed = Number.isFinite(obj?.signalSeed) ? Math.abs(Math.trunc(obj.signalSeed)) : 0;
-  return { type, delay, duration, seed };
+  return { type, delay, duration, seed, position: 0 };
 }
 
 /**
@@ -139,7 +142,18 @@ function knotRandom(seed, knot) {
 }
 
 /**
- * The phase of a noise envelope.
+ * The seed of one spatial knot of a noise field. The multiplier is the 32-bit
+ * golden ratio, which spreads consecutive knots across the hash's input.
+ * @param {number} seed
+ * @param {number} knot - Any integer, negative included.
+ * @returns {number}
+ */
+function spatialSeed(seed, knot) {
+  return hash32((seed ^ Math.imul(knot >>> 0, 0x9e3779b9)) >>> 0);
+}
+
+/**
+ * The phase of a noise envelope at one spatial knot.
  *
  * Noise here is phase noise: the envelope keeps unit magnitude and its phase
  * wanders, taking an independent uniformly random value at knots one coherence
@@ -167,7 +181,46 @@ export function noisePhase(t, duration, seed) {
 }
 
 /**
+ * The envelope of noise at one instant and one place along a source.
+ *
+ * The field is random in space as well as in time. Each spatial knot, one
+ * coherence length apart, has its own independent phase history from
+ * {@link noisePhase}; between knots the two neighbouring phasors are blended
+ * with a smooth step and renormalised, so the envelope keeps unit magnitude
+ * everywhere and a point source — always at position zero — is exactly one
+ * knot's history. Blending the phasors rather than the phases keeps the result
+ * continuous in time even when the two neighbours drift a half turn apart.
+ *
+ * @param {number} t - In optical cycles.
+ * @param {number} duration - The coherence time, in optical cycles.
+ * @param {number} seed
+ * @param {number} [position=0] - In coherence lengths.
+ * @returns {{re: number, im: number}}
+ */
+export function noiseEnvelope(t, duration, seed, position = 0) {
+  const knot = Math.floor(position);
+  const fraction = position - knot;
+  const a = noisePhase(t, duration, spatialSeed(seed, knot));
+  if (fraction === 0) return { re: Math.cos(a), im: Math.sin(a) };
+
+  const b = noisePhase(t, duration, spatialSeed(seed, knot + 1));
+  const w = fraction * fraction * (3 - 2 * fraction);
+  const re = (1 - w) * Math.cos(a) + w * Math.cos(b);
+  const im = (1 - w) * Math.sin(a) + w * Math.sin(b);
+  const norm = Math.hypot(re, im);
+  // Exactly opposite neighbours at the midpoint have no blended direction;
+  // taking the nearer one there is a choice on a set of measure zero.
+  if (norm < 1e-6) {
+    const nearer = w < 0.5 ? a : b;
+    return { re: Math.cos(nearer), im: Math.sin(nearer) };
+  }
+  return { re: re / norm, im: im / norm };
+}
+
+/**
  * The complex envelope of a signal at one instant.
+ *
+ * Noise has no instant of its own, so it ignores the delay.
  * @param {WaveSignal|undefined} signal - A missing signal is a continuous wave.
  * @param {number} t - In optical cycles.
  * @returns {{re: number, im: number}}
@@ -182,10 +235,8 @@ export function signalEnvelope(signal, t) {
       return { re: Math.exp(-GAUSSIAN_FWHM * s * s / (duration * duration)), im: 0 };
     case 'switchOn':
       return { re: 1 / (1 + Math.exp(-LOGISTIC_10_90 * s / duration)), im: 0 };
-    case 'noise': {
-      const phase = noisePhase(s, duration, seed);
-      return { re: Math.cos(phase), im: Math.sin(phase) };
-    }
+    case 'noise':
+      return noiseEnvelope(t, duration, seed, signal.position ?? 0);
     default:
       return { re: 1, im: 0 };
   }
@@ -193,7 +244,8 @@ export function signalEnvelope(signal, t) {
 
 /**
  * The code each signal type is stored under in the GPU's signal tables, which
- * hold `(code, delay, duration, seed)` per source.
+ * hold `(code, delay, duration, seed)` per source — or, for noise, which has
+ * no delay, `(code, position, duration, seed)`.
  */
 export const SIGNAL_TYPE_CODES = { cw: 0, pulse: 1, switchOn: 2, noise: 3 };
 
@@ -204,7 +256,8 @@ export const SIGNAL_TYPE_CODES = { cw: 0, pulse: 1, switchOn: 2, noise: 3 };
  */
 export function signalRecord(signal) {
   if (isContinuousWave(signal)) return [SIGNAL_TYPE_CODES.cw, 0, 1, 0];
-  return [SIGNAL_TYPE_CODES[signal.type], signal.delay, signal.duration, signal.seed];
+  const second = signal.type === 'noise' ? (signal.position ?? 0) : signal.delay;
+  return [SIGNAL_TYPE_CODES[signal.type], second, signal.duration, signal.seed];
 }
 
 /**
@@ -252,6 +305,27 @@ float noisePhase(float t, float duration, uint seed) {
   return startAngle + stepAngle * smoothed;
 }
 
+uint spatialSeed(uint seed, int knot) {
+  return hash32(seed ^ (uint(knot) * 0x9e3779b9u));
+}
+
+vec2 noiseEnvelope(float t, float duration, uint seed, float position) {
+  float knotFloor = floor(position);
+  int knot = int(knotFloor);
+  float fraction = position - knotFloor;
+  float a = noisePhase(t, duration, spatialSeed(seed, knot));
+  if (fraction == 0.0) return vec2(cos(a), sin(a));
+  float b = noisePhase(t, duration, spatialSeed(seed, knot + 1));
+  float w = fraction * fraction * (3.0 - 2.0 * fraction);
+  vec2 blended = (1.0 - w) * vec2(cos(a), sin(a)) + w * vec2(cos(b), sin(b));
+  float norm = length(blended);
+  if (norm < 1e-6) {
+    float nearer = w < 0.5 ? a : b;
+    return vec2(cos(nearer), sin(nearer));
+  }
+  return blended / norm;
+}
+
 vec2 signalEnvelope(vec4 record, float t) {
   int code = int(record.x + 0.5);
   if (code == ${SIGNAL_TYPE_CODES.cw}) return vec2(1.0, 0.0);
@@ -265,8 +339,7 @@ vec2 signalEnvelope(vec4 record, float t) {
     float exponent = min(-${float(LOGISTIC_10_90)} * s / duration, 80.0);
     return vec2(1.0 / (1.0 + exp(exponent)), 0.0);
   }
-  float phase = noisePhase(s, duration, uint(record.w));
-  return vec2(cos(phase), sin(phase));
+  return noiseEnvelope(t, duration, uint(record.w), record.y);
 }
 `;
 }
