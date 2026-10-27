@@ -1058,7 +1058,7 @@
       "plotPeak": "peak |U| = {{value}}",
       "plotHeight": "Plot height (px)",
       "farField": "Far field",
-      "farFieldInfo": "Show the pattern at infinity instead of the field here, over the angles the endpoints subtend at the centre of the last surface. Drawn as a dashed arc because nothing in the scene is there.",
+      "farFieldInfo": "Show the pattern at infinity instead of the field here, over the angles the endpoints subtend at the centre of the last surface. Drawn as a dashed arc because nothing in the scene is there. In a scene with time-dependent sources the far field still shows the time-harmonic pattern: light never reaches infinity in a finite time.",
       "axisPosition": "across",
       "axisAngle": "angle",
       "screenSamples": "Samples",
@@ -1094,7 +1094,15 @@
       },
       "spatialCoherenceInfo": "Whether the noise is the same all along the line. Coherent: the whole line fluctuates as one, like a laser beam whose phase wanders. Partial: points further apart than the coherence length fluctuate independently, like an extended thermal source, which radiates a broader beam with no stable interference pattern.",
       "coherenceLength": "Coherence length",
-      "coherenceLengthInfo": "Roughly how far apart two points on the line can be and still fluctuate together, in scene units. It is held to at least half a wavelength: finer noise than that cannot radiate, and would only make the result depend on the sampling."
+      "coherenceLengthInfo": "Roughly how far apart two points on the line can be and still fluctuate together, in scene units. It is held to at least half a wavelength: finer noise than that cannot radiate, and would only make the result depend on the sampling.",
+      "timeAveraging": "Intensity shown",
+      "timeAveragings": {
+        "average": "Time-averaged",
+        "instant": "At this instant"
+      },
+      "timeAveragingInfo": "The sources in this scene vary in time. Time-averaged shows what a slow detector records: the intensity averaged over the scene's whole time span, or over many coherence times when there is noise, so that interference between mutually incoherent light washes out. At this instant shows the intensity at the time on the clock, and moves as the animation plays.",
+      "plotTimeAveraged": "time-averaged",
+      "plotAtTime": "at t = {{time}} cycles"
     },
     "eqnInfo": {
       "examples": "For example:",

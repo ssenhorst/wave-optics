@@ -18,6 +18,7 @@ import CanvasRenderer from '../CanvasRenderer.js';
 import WaveFieldEngineWebGL2 from './WaveFieldEngineWebGL2.js';
 import { buildWaveModel, resolveWaveSettings, isTimeDependent } from './waveSceneModel.js';
 import { AdaptiveResolution } from './adaptiveResolution.js';
+import { sceneTimeSpan, averagingTimes } from './timeDomain.js';
 
 /**
  * How long after the last edit the field is recomputed at full resolution.
@@ -596,6 +597,7 @@ class WaveSimulator {
       }
       this.computeFrame();
       this.render();
+      this.redrawTimeMeasurements();
       this.emit('timeChange', { time: this.time });
       this.animationFrameId = requestAnimationFrame(step);
     };
@@ -631,6 +633,68 @@ class WaveSimulator {
   }
 
   /**
+   * Redraw the object layer if a measurement shows the field at the current
+   * instant, which a time-harmonic redraw never needs but a moving pulse does.
+   * @private
+   */
+  redrawTimeMeasurements() {
+    if (!this.isTimeMode) return;
+    if ((this.scene.objs ?? []).some((obj) => obj.readsTimeField?.())) this.drawObjects();
+  }
+
+  /**
+   * The time-dependent field `Psi` at arbitrary points, at the current instant.
+   *
+   * Evaluated on the GPU against the same histories the view was drawn from:
+   * the CPU reference recursion is far too slow through more than one
+   * interface to run per frame.
+   *
+   * @param {Array<{x: number, y: number}>} points
+   * @returns {Float32Array|null} Interleaved real and imaginary parts.
+   */
+  timeFieldAt(points) {
+    if (!this.isTimeMode || !this.engine || !this.lastModel || points.length === 0) return null;
+    try {
+      return this.engine.fieldAtPointsOverTime(this.lastModel, points, [this.time]);
+    } catch (e) {
+      this.error = e.message;
+      return null;
+    }
+  }
+
+  /**
+   * The time-averaged intensity `<|Psi|^2>` at arbitrary points, over the
+   * instants {@link averagingTimes} picks for the current model.
+   *
+   * This walks the histories through the whole averaging span, so the next
+   * frame refills them for the current time; it is meant to be computed once
+   * per change of the scene and cached, not per frame.
+   *
+   * @param {Array<{x: number, y: number}>} points
+   * @returns {Float64Array|null}
+   */
+  timeAveragedIntensityAt(points) {
+    if (!this.isTimeMode || !this.engine || !this.lastModel || points.length === 0) return null;
+    const times = averagingTimes(this.lastModel);
+    let field;
+    try {
+      field = this.engine.fieldAtPointsOverTime(this.lastModel, points, times);
+    } catch (e) {
+      this.error = e.message;
+      return null;
+    }
+    const out = new Float64Array(points.length);
+    for (let k = 0; k < times.length; k++) {
+      for (let p = 0; p < points.length; p++) {
+        const at = (k * points.length + p) * 2;
+        out[p] += field[at] * field[at] + field[at + 1] * field[at + 1];
+      }
+    }
+    for (let p = 0; p < points.length; p++) out[p] /= times.length;
+    return out;
+  }
+
+  /**
    * Set the animation clock and redraw.
    * @param {number} time - In optical cycles.
    */
@@ -638,6 +702,7 @@ class WaveSimulator {
     this.time = time;
     this.computeFrame();
     this.render();
+    this.redrawTimeMeasurements();
     this.emit('timeChange', { time: this.time });
   }
 
@@ -657,33 +722,6 @@ class WaveSimulator {
     this.engine = null;
     this.eventListeners = {};
   }
-}
-
-/**
- * The time span of a time-dependent model, in optical cycles: from zero until
- * the latest signal, plus a few durations, has had time to cross the view.
- *
- * Noise has no instant of its own, so it contributes only its duration; the
- * span then just has to be long enough to watch it fluctuate.
- *
- * @param {Object} model - As built by `buildWaveModel`.
- * @returns {number}
- */
-export function sceneTimeSpan(model) {
-  const { grid, settings, subspaces } = model;
-  let latest = 0;
-  let largestIndex = settings.refractiveIndex;
-  for (const subspace of subspaces) {
-    largestIndex = Math.max(largestIndex, subspace.refractiveIndex);
-    for (const item of [...subspace.primaries, ...(subspace.planeWaves ?? [])]) {
-      const signal = item.signal;
-      if (!signal || signal.type === 'cw') continue;
-      const start = signal.type === 'noise' ? 0 : signal.delay;
-      latest = Math.max(latest, start + 3 * signal.duration);
-    }
-  }
-  const crossing = largestIndex * grid.extent / settings.wavelength;
-  return latest + crossing;
 }
 
 export default WaveSimulator;

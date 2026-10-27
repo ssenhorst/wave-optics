@@ -52,8 +52,9 @@ import { buildOklchGlsl, DEFAULT_PHASE_CHROMA } from './oklch.js';
 import { FloatTable, BoundaryLut, BOUNDARY_LUT_WIDTH } from './gpuTables.js';
 import { buildSignalGlsl, signalRecord } from './signals.js';
 import {
-  planHistory, historyShape, advanceHistory, slotRanges
+  planHistory, historyShape, advanceHistory, slotRanges, HISTORY_MARGIN_SLOTS
 } from './timeDomain.js';
+import { subspaceIndexAt } from './waveSceneModel.js';
 
 /** Texture units, fixed so the two summation programs bind identically. */
 const UNIT_DIRECTIONAL_GEOMETRY = 0;
@@ -361,6 +362,33 @@ void main() {
   // The site re-radiates what reached it its own delay ago.
   vec2 incident = sumFieldAtTime(geometry.xy, tau - transmission.w);
   fragColor = vec4(cmul(transmission.xy, incident) * transmission.z, 0.0, 1.0);
+}
+`;
+
+/**
+ * The field at a list of points over a list of instants: each fragment is one
+ * point (column) at one instant (row). Drawn once per subspace, each draw
+ * keeping only the points that lie in it, as the field pass does by pixel.
+ */
+const PROBE_TIME_FRAGMENT_SHADER = `#version 300 es
+${TIME_SUMMATION_GLSL}
+
+uniform sampler2D uProbes;      // (x, y, subspace, -)
+uniform sampler2D uProbeTimes;  // (t, -, -, -)
+uniform int uProbeWidth;
+uniform int uTimeWidth;
+uniform int uTimeOffset;
+uniform int uSubspace;
+
+out vec4 fragColor;
+
+void main() {
+  ivec2 frag = ivec2(gl_FragCoord.xy);
+  vec4 probe = texelFetch(uProbes, ivec2(frag.x % uProbeWidth, frag.x / uProbeWidth), 0);
+  if (int(probe.z + 0.5) != uSubspace) discard;
+  int k = frag.y + uTimeOffset;
+  float t = texelFetch(uProbeTimes, ivec2(k % uTimeWidth, k / uTimeWidth), 0).x;
+  fragColor = vec4(sumFieldAtTime(probe.xy, t), 0.0, 1.0);
 }
 `;
 
@@ -911,23 +939,156 @@ class WaveFieldEngineWebGL2 {
     const gl = this.gl;
     this.ensureTimePrograms();
 
-    if (this.timeModel !== model) this.prepareTimeDomain(model);
-
-    const move = advanceHistory(this.historyState, time, this.historyPlan);
-    this.historyState = { epoch: move.epoch, newest: move.newest };
-    const stepsFilled = move.refill ? this.historyPlan.slots : Math.max(0, move.newest - move.from + 1);
-
     gl.disable(gl.BLEND);
     gl.disable(gl.DEPTH_TEST);
     gl.bindVertexArray(this.vertexArray);
 
-    if (stepsFilled > 0) this.runHistoryPasses(model, move.refill ? 0 : move.from, move.newest);
+    const advanced = this.advanceHistories(model, time);
     this.runFieldTimePasses(model, time);
 
     gl.bindVertexArray(null);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     this.lastStats = null;
+    return advanced;
+  }
+
+  /**
+   * Bring the histories to a time, laying them out first if the model is new.
+   * Expects the vertex array bound and blending off.
+   * @param {Object} model
+   * @param {number} time
+   * @returns {{refilled: boolean, stepsFilled: number}}
+   * @private
+   */
+  advanceHistories(model, time) {
+    if (this.timeModel !== model) this.prepareTimeDomain(model);
+    const move = advanceHistory(this.historyState, time, this.historyPlan);
+    this.historyState = { epoch: move.epoch, newest: move.newest };
+    const stepsFilled = move.refill ? this.historyPlan.slots : Math.max(0, move.newest - move.from + 1);
+    if (stepsFilled > 0) this.runHistoryPasses(model, move.refill ? 0 : move.from, move.newest);
     return { refilled: move.refill, stepsFilled };
+  }
+
+  /**
+   * The time-dependent field at arbitrary points, at each of a list of
+   * increasing instants.
+   *
+   * The histories keep a window that ends at the newest step, plus a margin of
+   * spare steps before it. Instants are therefore taken in chunks no longer
+   * than that margin: the histories are advanced to the end of a chunk, and
+   * every instant in the chunk can then be looked up. A long list walks the
+   * histories forward through the whole of it, so a frame drawn afterwards
+   * refills them for its own time.
+   *
+   * @param {Object} model - As built by `buildWaveModel`.
+   * @param {Array<{x: number, y: number}>} points
+   * @param {number[]} times - In increasing order, in optical cycles.
+   * @returns {Float32Array} For each instant, for each point, `(Re, Im)` of `Psi`.
+   */
+  fieldAtPointsOverTime(model, points, times) {
+    const gl = this.gl;
+    this.ensureTimePrograms();
+    const out = new Float32Array(points.length * times.length * 2);
+    if (points.length === 0 || times.length === 0) return out;
+
+    gl.disable(gl.BLEND);
+    gl.disable(gl.DEPTH_TEST);
+    gl.bindVertexArray(this.vertexArray);
+    if (this.timeModel !== model) this.prepareTimeDomain(model);
+
+    const axisSign = model.settings.axisSign ?? 1;
+    this.probeTable.fill(points.length, (i, buffer, at) => {
+      buffer[at] = points[i].x;
+      buffer[at + 1] = points[i].y;
+      buffer[at + 2] = subspaceIndexAt(model.interfaces, points[i].x, points[i].y, axisSign);
+    });
+    this.probeTimes.fill(times.length, (i, buffer, at) => { buffer[at] = times[i]; });
+
+    // How far before the newest step a lookup can still be served, less one
+    // step for the interpolation partner and one for rounding.
+    const reach = (HISTORY_MARGIN_SLOTS - 2) * this.historyPlan.step;
+    const maxRows = Math.min(times.length, gl.getParameter(gl.MAX_TEXTURE_SIZE));
+    const width = points.length;
+    this.allocateProbeTarget(width, maxRows);
+    const rowBuffer = new Float32Array(width * maxRows * 4);
+
+    let first = 0;
+    while (first < times.length) {
+      let last = first;
+      while (last + 1 < times.length && last + 1 - first < maxRows &&
+        times[last + 1] - times[first] <= reach) last++;
+      const rows = last - first + 1;
+
+      this.advanceHistories(model, times[last]);
+      this.runProbePasses(model, width, rows, first);
+
+      gl.readPixels(0, 0, width, rows, gl.RGBA, gl.FLOAT, rowBuffer, 0);
+      for (let r = 0; r < rows; r++) {
+        for (let p = 0; p < width; p++) {
+          const from = (r * width + p) * 4;
+          const to = ((first + r) * width + p) * 2;
+          out[to] = rowBuffer[from];
+          out[to + 1] = rowBuffer[from + 1];
+        }
+      }
+      first = last + 1;
+    }
+
+    gl.bindVertexArray(null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return out;
+  }
+
+  /**
+   * Make the probe target at least `width` by `height`.
+   * @private
+   */
+  allocateProbeTarget(width, height) {
+    const gl = this.gl;
+    if (this.probeTarget.width >= width && this.probeTarget.height >= height) return;
+    this.probeTarget.width = Math.max(width, this.probeTarget.width);
+    this.probeTarget.height = Math.max(height, this.probeTarget.height);
+    gl.bindTexture(gl.TEXTURE_2D, this.probeTarget.texture);
+    gl.texImage2D(
+      gl.TEXTURE_2D, 0, gl.RGBA32F, this.probeTarget.width, this.probeTarget.height,
+      0, gl.RGBA, gl.FLOAT, null
+    );
+    setNearestClamped(gl);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.probeTarget.framebuffer);
+    gl.framebufferTexture2D(
+      gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.probeTarget.texture, 0
+    );
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+
+  /**
+   * Evaluate the probes at instants `offset` to `offset + rows - 1`.
+   * @private
+   */
+  runProbePasses(model, width, rows, offset) {
+    const gl = this.gl;
+    const uniforms = this.probeTimeUniforms;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.probeTarget.framebuffer);
+    gl.viewport(0, 0, width, rows);
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.useProgram(this.probeTimeProgram);
+
+    gl.activeTexture(gl.TEXTURE0 + UNIT_EXTRA_A);
+    gl.bindTexture(gl.TEXTURE_2D, this.probeTable.texture);
+    gl.uniform1i(uniforms.uProbes, UNIT_EXTRA_A);
+    gl.activeTexture(gl.TEXTURE0 + UNIT_EXTRA_B);
+    gl.bindTexture(gl.TEXTURE_2D, this.probeTimes.texture);
+    gl.uniform1i(uniforms.uProbeTimes, UNIT_EXTRA_B);
+    gl.uniform1i(uniforms.uProbeWidth, this.probeTable.width);
+    gl.uniform1i(uniforms.uTimeWidth, this.probeTimes.width);
+    gl.uniform1i(uniforms.uTimeOffset, offset);
+
+    for (let j = 0; j < model.subspaces.length; j++) {
+      this.bindTimeSources(uniforms, j, model);
+      gl.uniform1i(uniforms.uSubspace, j);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
   }
 
   /**
@@ -939,6 +1100,16 @@ class WaveFieldEngineWebGL2 {
     const gl = this.gl;
     this.chainTimeProgram = linkProgram(gl, CHAIN_TIME_FRAGMENT_SHADER);
     this.fieldTimeProgram = linkProgram(gl, FIELD_TIME_FRAGMENT_SHADER);
+    this.probeTimeProgram = linkProgram(gl, PROBE_TIME_FRAGMENT_SHADER);
+    this.probeTimeUniforms = collectUniforms(gl, this.probeTimeProgram, [
+      ...TIME_SUMMATION_UNIFORMS, 'uProbes', 'uProbeTimes',
+      'uProbeWidth', 'uTimeWidth', 'uTimeOffset', 'uSubspace',
+    ]);
+    this.probeTable = new FloatTable(gl);
+    this.probeTimes = new FloatTable(gl);
+    this.probeTarget = {
+      texture: gl.createTexture(), framebuffer: gl.createFramebuffer(), width: 0, height: 0,
+    };
     this.chainTimeUniforms = collectUniforms(gl, this.chainTimeProgram, [
       ...TIME_SUMMATION_UNIFORMS, 'uSiteGeometry', 'uSiteTransmission',
       'uSiteCount', 'uSiteWidth', 'uSiteRows',
@@ -1304,6 +1475,13 @@ class WaveFieldEngineWebGL2 {
     gl.deleteProgram(this.displayProgram);
     if (this.chainTimeProgram) gl.deleteProgram(this.chainTimeProgram);
     if (this.fieldTimeProgram) gl.deleteProgram(this.fieldTimeProgram);
+    if (this.probeTimeProgram) {
+      gl.deleteProgram(this.probeTimeProgram);
+      this.probeTable.destroy();
+      this.probeTimes.destroy();
+      gl.deleteTexture(this.probeTarget.texture);
+      gl.deleteFramebuffer(this.probeTarget.framebuffer);
+    }
     if (this.emptyHistory) gl.deleteTexture(this.emptyHistory);
     for (const history of this.histories) {
       gl.deleteTexture(history.texture);

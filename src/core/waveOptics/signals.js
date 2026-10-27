@@ -132,14 +132,15 @@ export function hash32(x) {
 }
 
 /**
- * A uniform random number in `[0, 1)` for a noise knot.
- * @param {number} seed
- * @param {number} knot - Any integer, negative included.
- * @returns {number}
+ * Noise knots per coherence time (and per coherence length along a source).
+ *
+ * The noise field is a cubic B-spline over a lattice of random phasors, and its
+ * correlation then falls to `1/e` at about 1.18 knot spacings (measured; the
+ * spline's autocorrelation is close to a Gaussian). Spacing the knots this much
+ * closer than the stated coherence time makes the stated time the `1/e` point,
+ * which is the usual meaning of a coherence time.
  */
-function knotRandom(seed, knot) {
-  return hash32(hash32(seed) ^ (knot >>> 0)) / 4294967296;
-}
+export const NOISE_KNOTS_PER_COHERENCE = 1.18;
 
 /**
  * The seed of one spatial knot of a noise field. The multiplier is the 32-bit
@@ -153,43 +154,38 @@ function spatialSeed(seed, knot) {
 }
 
 /**
- * The phase of a noise envelope at one spatial knot.
- *
- * Noise here is phase noise: the envelope keeps unit magnitude and its phase
- * wanders, taking an independent uniformly random value at knots one coherence
- * time apart and interpolating smoothly between them along the shorter way
- * round. Two sources with different seeds therefore have no fixed phase
- * relation, and their interference averages away over a few coherence times,
- * while each one on its own is as bright as the continuous wave.
- *
- * @param {number} t - In optical cycles.
- * @param {number} duration - The coherence time, in optical cycles.
- * @param {number} seed
- * @returns {number} In radians.
+ * The cubic B-spline weights of the four knots around a fractional position,
+ * for knots `floor - 1` to `floor + 2`. They sum to one and are smooth to
+ * second order as the position moves across a knot.
+ * @param {number} f - The fractional part, in `[0, 1)`.
+ * @returns {number[]}
  */
-export function noisePhase(t, duration, seed) {
-  const position = t / duration;
-  const knot = Math.floor(position);
-  const fraction = position - knot;
-  const from = knotRandom(seed, knot) * 2 * Math.PI;
-  const to = knotRandom(seed, knot + 1) * 2 * Math.PI;
-
-  let step = to - from;
-  step -= 2 * Math.PI * Math.round(step / (2 * Math.PI));
-  const smooth = fraction * fraction * (3 - 2 * fraction);
-  return from + step * smooth;
+function splineWeights(f) {
+  const g = 1 - f;
+  return [
+    g * g * g / 6,
+    (3 * f * f * f - 6 * f * f + 4) / 6,
+    (-3 * f * f * f + 3 * f * f + 3 * f + 1) / 6,
+    f * f * f / 6,
+  ];
 }
 
 /**
  * The envelope of noise at one instant and one place along a source.
  *
- * The field is random in space as well as in time. Each spatial knot, one
- * coherence length apart, has its own independent phase history from
- * {@link noisePhase}; between knots the two neighbouring phasors are blended
- * with a smooth step and renormalised, so the envelope keeps unit magnitude
- * everywhere and a point source — always at position zero — is exactly one
- * knot's history. Blending the phasors rather than the phases keeps the result
- * continuous in time even when the two neighbours drift a half turn apart.
+ * The noise is a smooth complex Gaussian random field over time and position:
+ * independent unit phasors of uniformly random phase sit on a lattice of knots,
+ * and the field between them is their cubic B-spline. That makes it smooth to
+ * second order everywhere, with no jumps however the neighbouring knots happen
+ * to line up, and gives it the statistics of thermal light — the phase wanders
+ * and the amplitude fluctuates with it, occasionally passing through zero.
+ *
+ * The weights are renormalised by the root of their sum of squares, which
+ * depends only on where between knots the point is, so the mean intensity is
+ * exactly one everywhere rather than rippling at the knot spacing.
+ *
+ * A point source sits at position zero and uses the time lattice alone, so
+ * it costs four knots instead of sixteen.
  *
  * @param {number} t - In optical cycles.
  * @param {number} duration - The coherence time, in optical cycles.
@@ -198,23 +194,33 @@ export function noisePhase(t, duration, seed) {
  * @returns {{re: number, im: number}}
  */
 export function noiseEnvelope(t, duration, seed, position = 0) {
-  const knot = Math.floor(position);
-  const fraction = position - knot;
-  const a = noisePhase(t, duration, spatialSeed(seed, knot));
-  if (fraction === 0) return { re: Math.cos(a), im: Math.sin(a) };
+  const timeKnots = t / duration * NOISE_KNOTS_PER_COHERENCE;
+  const n0 = Math.floor(timeKnots);
+  const wt = splineWeights(timeKnots - n0);
 
-  const b = noisePhase(t, duration, spatialSeed(seed, knot + 1));
-  const w = fraction * fraction * (3 - 2 * fraction);
-  const re = (1 - w) * Math.cos(a) + w * Math.cos(b);
-  const im = (1 - w) * Math.sin(a) + w * Math.sin(b);
-  const norm = Math.hypot(re, im);
-  // Exactly opposite neighbours at the midpoint have no blended direction;
-  // taking the nearer one there is a choice on a set of measure zero.
-  if (norm < 1e-6) {
-    const nearer = w < 0.5 ? a : b;
-    return { re: Math.cos(nearer), im: Math.sin(nearer) };
+  let m0 = 0;
+  let ws = [1];
+  if (position !== 0) {
+    const spaceKnots = position * NOISE_KNOTS_PER_COHERENCE;
+    m0 = Math.floor(spaceKnots) - 1;
+    ws = splineWeights(spaceKnots - Math.floor(spaceKnots));
   }
-  return { re: re / norm, im: im / norm };
+
+  let re = 0;
+  let im = 0;
+  let norm = 0;
+  for (let a = 0; a < ws.length; a++) {
+    const knotSeed = spatialSeed(seed, m0 + a);
+    for (let b = 0; b < 4; b++) {
+      const w = ws[a] * wt[b];
+      const angle = hash32(knotSeed ^ ((n0 - 1 + b) >>> 0)) / 4294967296 * 2 * Math.PI;
+      re += w * Math.cos(angle);
+      im += w * Math.sin(angle);
+      norm += w * w;
+    }
+  }
+  const scale = 1 / Math.sqrt(norm);
+  return { re: re * scale, im: im * scale };
 }
 
 /**
@@ -287,43 +293,51 @@ uint hash32(uint x) {
   return x;
 }
 
-float knotRandom(uint seed, int knot) {
-  return float(hash32(hash32(seed) ^ uint(knot))) / 4294967296.0;
-}
-
-float noisePhase(float t, float duration, uint seed) {
-  const float TWO_PI = 6.283185307179586;
-  float position = t / duration;
-  float knotFloor = floor(position);
-  int knot = int(knotFloor);
-  float fraction = position - knotFloor;
-  float startAngle = knotRandom(seed, knot) * TWO_PI;
-  float endAngle = knotRandom(seed, knot + 1) * TWO_PI;
-  float stepAngle = endAngle - startAngle;
-  stepAngle -= TWO_PI * floor(stepAngle / TWO_PI + 0.5);
-  float smoothed = fraction * fraction * (3.0 - 2.0 * fraction);
-  return startAngle + stepAngle * smoothed;
-}
-
 uint spatialSeed(uint seed, int knot) {
   return hash32(seed ^ (uint(knot) * 0x9e3779b9u));
 }
 
+vec4 splineWeights(float f) {
+  float g = 1.0 - f;
+  return vec4(
+    g * g * g,
+    3.0 * f * f * f - 6.0 * f * f + 4.0,
+    -3.0 * f * f * f + 3.0 * f * f + 3.0 * f + 1.0,
+    f * f * f
+  ) / 6.0;
+}
+
 vec2 noiseEnvelope(float t, float duration, uint seed, float position) {
-  float knotFloor = floor(position);
-  int knot = int(knotFloor);
-  float fraction = position - knotFloor;
-  float a = noisePhase(t, duration, spatialSeed(seed, knot));
-  if (fraction == 0.0) return vec2(cos(a), sin(a));
-  float b = noisePhase(t, duration, spatialSeed(seed, knot + 1));
-  float w = fraction * fraction * (3.0 - 2.0 * fraction);
-  vec2 blended = (1.0 - w) * vec2(cos(a), sin(a)) + w * vec2(cos(b), sin(b));
-  float norm = length(blended);
-  if (norm < 1e-6) {
-    float nearer = w < 0.5 ? a : b;
-    return vec2(cos(nearer), sin(nearer));
+  const float TWO_PI = 6.283185307179586;
+  float timeKnots = t / duration * ${float(NOISE_KNOTS_PER_COHERENCE)};
+  float n0f = floor(timeKnots);
+  int n0 = int(n0f);
+  vec4 wt = splineWeights(timeKnots - n0f);
+
+  int m0 = 0;
+  int spatialCount = 1;
+  vec4 ws = vec4(1.0, 0.0, 0.0, 0.0);
+  if (position != 0.0) {
+    float spaceKnots = position * ${float(NOISE_KNOTS_PER_COHERENCE)};
+    float m0f = floor(spaceKnots);
+    m0 = int(m0f) - 1;
+    spatialCount = 4;
+    ws = splineWeights(spaceKnots - m0f);
   }
-  return blended / norm;
+
+  vec2 total = vec2(0.0);
+  float norm = 0.0;
+  for (int a = 0; a < 4; a++) {
+    if (a >= spatialCount) break;
+    uint knotSeed = spatialSeed(seed, m0 + a);
+    for (int b = 0; b < 4; b++) {
+      float w = ws[a] * wt[b];
+      float angle = float(hash32(knotSeed ^ uint(n0 - 1 + b))) / 4294967296.0 * TWO_PI;
+      total += w * vec2(cos(angle), sin(angle));
+      norm += w * w;
+    }
+  }
+  return total * inversesqrt(norm);
 }
 
 vec2 signalEnvelope(vec4 record, float t) {

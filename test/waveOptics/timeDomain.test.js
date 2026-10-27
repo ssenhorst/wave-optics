@@ -143,11 +143,28 @@ describe('the signal model', () => {
   describe('noise', () => {
     const noise = (seed) => ({ type: 'noise', delay: 0, duration: 10, seed });
 
-    test('keeps unit magnitude', () => {
-      for (let t = -50; t < 50; t += 0.37) {
-        const e = signalEnvelope(noise(3), t);
-        expect(Math.hypot(e.re, e.im)).toBeCloseTo(1, 12);
+    test('has unit mean intensity, like the continuous wave it modulates', () => {
+      let sum = 0;
+      const count = 20000;
+      for (let i = 0; i < count; i++) {
+        const e = signalEnvelope(noise(3), i * 0.913);
+        sum += e.re * e.re + e.im * e.im;
       }
+      expect(Math.abs(sum / count - 1)).toBeLessThan(0.05);
+    });
+
+    test('changes smoothly, with no jumps', () => {
+      // A field built by blending and renormalising phasors snaps round where
+      // neighbouring knots are nearly opposite; a spline never does. The bound
+      // is a few times the typical rate, far below what a jump would give.
+      const dt = 0.002;
+      let worst = 0;
+      for (let t = 0; t < 1000; t += dt) {
+        const a = signalEnvelope(noise(3), t);
+        const b = signalEnvelope(noise(3), t + dt);
+        worst = Math.max(worst, Math.hypot(b.re - a.re, b.im - a.im) / dt);
+      }
+      expect(worst * 10).toBeLessThan(5);
     });
 
     test('is the same realisation every time for a given seed', () => {
@@ -170,6 +187,8 @@ describe('the signal model', () => {
         return Math.hypot(re, im) / count;
       };
       expect(correlation(0.5)).toBeGreaterThan(0.95);
+      // The coherence time is where the correlation has fallen to 1/e.
+      expect(correlation(10)).toBeCloseTo(Math.exp(-1), 1);
       expect(correlation(30)).toBeLessThan(0.05);
     });
   });
@@ -380,14 +399,29 @@ describe('the delay of a transmission phase', () => {
 });
 
 describe('spatial coherence of noise', () => {
-  test('a point source sees one knot, and the field keeps unit magnitude between knots', () => {
-    const at0 = noiseEnvelope(12.3, 5, 7, 0);
+  test('a point source reads the noise at position zero', () => {
     const signal = { type: 'noise', delay: 0, duration: 5, seed: 7, position: 0 };
-    expect(signalEnvelope(signal, 12.3)).toEqual(at0);
-    for (let position = -3; position < 3; position += 0.137) {
-      const e = noiseEnvelope(40.1, 5, 7, position);
-      expect(Math.hypot(e.re, e.im)).toBeCloseTo(1, 9);
+    expect(signalEnvelope(signal, 12.3)).toEqual(noiseEnvelope(12.3, 5, 7, 0));
+  });
+
+  test('has unit mean intensity everywhere between knots, and no jumps along the line', () => {
+    let sum = 0;
+    let count = 0;
+    let worst = 0;
+    const du = 0.002;
+    for (let i = 0; i < 400; i++) {
+      const t = i * 3.7;
+      for (let position = -3; position < 3; position += du) {
+        const a = noiseEnvelope(t, 5, 7, position);
+        const b = noiseEnvelope(t, 5, 7, position + du);
+        sum += a.re * a.re + a.im * a.im;
+        count++;
+        worst = Math.max(worst, Math.hypot(b.re - a.re, b.im - a.im) / du);
+      }
     }
+    expect(Math.abs(sum / count - 1)).toBeLessThan(0.05);
+    // Per coherence length; a jump would give thousands.
+    expect(worst).toBeLessThan(5);
   });
 
   test('points close together fluctuate together, points far apart do not', () => {
@@ -407,6 +441,7 @@ describe('spatial coherence of noise', () => {
       return Math.hypot(re, im) / count;
     };
     expect(correlation(0.02)).toBeGreaterThan(0.95);
+    expect(correlation(1)).toBeCloseTo(Math.exp(-1), 1);
     expect(correlation(3)).toBeLessThan(0.1);
   });
 

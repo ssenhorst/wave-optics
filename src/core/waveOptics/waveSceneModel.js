@@ -446,6 +446,16 @@ export function buildWaveModel(scene, { resolution, resolveResolution } = {}) {
     : (resolution ?? settings.targetResolution);
   const grid = computeFieldGrid(scene, chosen);
 
+  // Points the measurements read the field at. The time-domain histories have
+  // to cover the delays to these as well as to the view, since a screen may
+  // reach outside it.
+  const measurementPoints = [];
+  for (const obj of scene.objs ?? []) {
+    for (const point of obj?.getMeasurementPoints?.() ?? []) {
+      if (Number.isFinite(point?.x) && Number.isFinite(point?.y)) measurementPoints.push(point);
+    }
+  }
+
   return {
     settings,
     axisSign: settings.axisSign,
@@ -453,6 +463,7 @@ export function buildWaveModel(scene, { resolution, resolveResolution } = {}) {
     interfaces,
     grid,
     warnings,
+    measurementPoints,
     diagnostics: {
       sourceCount,
       interfaceCount: interfaces.length,

@@ -110,13 +110,15 @@ function maxDelayBetween(model, j, a, b) {
 
 /**
  * The longest delay of a field-pass lookup into subspace `j`'s history: from
- * any of its sites to anywhere in the view.
+ * any of its sites to anywhere in the view, or to any point a measurement
+ * reads, which may lie outside the view.
  * @param {Object} model - As built by `buildWaveModel`.
  * @param {number} j - A subspace with an interface before it.
  * @returns {number} In optical cycles.
  */
 export function viewDelay(model, j) {
-  return maxDelayBetween(model, j, model.subspaces[j].surfaceSamples, gridCorners(model.grid));
+  const targets = [...gridCorners(model.grid), ...(model.measurementPoints ?? [])];
+  return maxDelayBetween(model, j, model.subspaces[j].surfaceSamples, targets);
 }
 
 /**
@@ -339,6 +341,76 @@ export function slotRanges(from, to, slots) {
   const ranges = [{ start, count: firstCount }];
   if (firstCount < count) ranges.push({ start: 0, count: count - firstCount });
   return ranges;
+}
+
+/**
+ * The time span of a time-dependent model, in optical cycles: from zero until
+ * the latest signal, plus a few durations, has had time to cross the view.
+ *
+ * Noise has no instant of its own, so it contributes only its duration; the
+ * span then just has to be long enough to watch it fluctuate.
+ *
+ * @param {Object} model - As built by `buildWaveModel`.
+ * @returns {number}
+ */
+export function sceneTimeSpan(model) {
+  const { grid, settings, subspaces } = model;
+  let latest = 0;
+  let largestIndex = settings.refractiveIndex;
+  for (const subspace of subspaces) {
+    largestIndex = Math.max(largestIndex, subspace.refractiveIndex);
+    for (const item of [...subspace.primaries, ...(subspace.planeWaves ?? [])]) {
+      const signal = item.signal;
+      if (isContinuousWave(signal)) continue;
+      const start = signal.type === 'noise' ? 0 : signal.delay;
+      latest = Math.max(latest, start + 3 * signal.duration);
+    }
+  }
+  const crossing = largestIndex * grid.extent / settings.wavelength;
+  return latest + crossing;
+}
+
+/** Coherence times a time average over noise spans, at the least. */
+export const NOISE_AVERAGE_COHERENCE_TIMES = 200;
+
+/** Samples per shortest signal duration in a time average. */
+export const AVERAGE_SAMPLES_PER_DURATION = 4;
+
+/** The most instants a time average evaluates. */
+export const MAX_AVERAGE_SAMPLES = 2000;
+
+/**
+ * The instants a time average of the intensity is taken over, in increasing
+ * order.
+ *
+ * For deterministic signals the average runs over the scene's time span, from
+ * before anything is emitted until the last of it has left the view, so it is
+ * the time-integrated intensity — the pattern a slow detector records from a
+ * pulse — divided by a fixed span. Noise has no end, so the average runs over
+ * enough coherence times that its estimate settles: with 200 the remaining
+ * scatter is a few percent.
+ *
+ * @param {Object} model
+ * @returns {number[]}
+ */
+export function averagingTimes(model) {
+  let span = sceneTimeSpan(model);
+  // The longest coherence time is the one the average has to outlast.
+  let longestNoise = 0;
+  for (const subspace of model.subspaces) {
+    for (const item of [...subspace.primaries, ...(subspace.planeWaves ?? [])]) {
+      if (item.signal?.type === 'noise') longestNoise = Math.max(longestNoise, item.signal.duration);
+    }
+  }
+  span = Math.max(span, NOISE_AVERAGE_COHERENCE_TIMES * longestNoise);
+
+  const duration = shortestSignalDuration(model);
+  const wanted = Number.isFinite(duration)
+    ? Math.ceil(span * AVERAGE_SAMPLES_PER_DURATION / duration)
+    : 1;
+  const count = Math.max(1, Math.min(MAX_AVERAGE_SAMPLES, wanted));
+  const step = span / count;
+  return Array.from({ length: count }, (_, i) => (i + 0.5) * step);
 }
 
 export default {

@@ -27,6 +27,7 @@
 import Scene from '../../src/core/Scene.js';
 import WavePointSource from '../../src/core/sceneObjs/wave/WavePointSource.js';
 import WaveInterface from '../../src/core/sceneObjs/wave/WaveInterface.js';
+import WaveScreen from '../../src/core/sceneObjs/wave/WaveScreen.js';
 import { buildWaveModel, subspaceIndexAt } from '../../src/core/waveOptics/waveSceneModel.js';
 import { computeModelFieldAtTime } from '../../src/core/waveOptics/WaveFieldEngineCpu.js';
 import { greensFunction, rayleighSommerfeldKernel } from '../../src/core/waveOptics/hankel.js';
@@ -35,6 +36,8 @@ import { signalEnvelope } from '../../src/core/waveOptics/signals.js';
 import {
   planHistory, advanceHistory, slotRanges, slotOf, historyShape, viewDelay, chainDelay,
   HISTORY_STEPS_PER_DURATION, HISTORY_MARGIN_SLOTS,
+  averagingTimes, sceneTimeSpan, AVERAGE_SAMPLES_PER_DURATION,
+  NOISE_AVERAGE_COHERENCE_TIMES, MAX_AVERAGE_SAMPLES,
 } from '../../src/core/waveOptics/timeDomain.js';
 
 const WAVELENGTH = 20;
@@ -331,5 +334,38 @@ describe('the streaming algorithm', () => {
     emulator.advance(end);
     const { worst, scale } = compare(emulator, end);
     expect(worst / scale).toBeLessThan(0.02);
+  });
+});
+
+describe('time averaging and measurements', () => {
+  test('averages a pulse over the scene span, and noise over many coherence times', () => {
+    const pulse = slabModel({ duration: 6 });
+    const times = averagingTimes(pulse);
+    expect(times[times.length - 1]).toBeLessThan(sceneTimeSpan(pulse));
+    expect(times[1] - times[0]).toBeCloseTo(6 / AVERAGE_SAMPLES_PER_DURATION, 1);
+
+    const scene = makeScene();
+    const source = new WavePointSource(scene);
+    Object.assign(source, { x: 0, y: 0, amplitude: 1, signalType: 'noise', signalDuration: 3 });
+    scene.objs.push(source);
+    const noisy = averagingTimes(buildWaveModel(scene, { resolution: 64 }));
+    expect(noisy[noisy.length - 1]).toBeGreaterThan(NOISE_AVERAGE_COHERENCE_TIMES * 3 * 0.99);
+    expect(noisy.length).toBeLessThanOrEqual(MAX_AVERAGE_SAMPLES);
+  });
+
+  test('a screen outside the view lengthens the window to reach it', () => {
+    const scene = makeScene();
+    const source = new WavePointSource(scene);
+    Object.assign(source, { x: -200, y: 0, amplitude: 1, signalType: 'pulse', signalDuration: 6 });
+    scene.objs.push(source);
+    addInterface(scene, 0, 80, 1.5);
+    const without = planHistory(buildWaveModel(scene, { resolution: 64 })).window;
+    const screen = new WaveScreen(scene);
+    screen.p1 = { x: 6000, y: -100 };
+    screen.p2 = { x: 6000, y: 100 };
+    scene.objs.push(screen);
+    const model = buildWaveModel(scene, { resolution: 64 });
+    expect(model.measurementPoints).toHaveLength(2);
+    expect(planHistory(model).window).toBeGreaterThan(without + 200);
   });
 });
