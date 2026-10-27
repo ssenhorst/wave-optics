@@ -1,0 +1,123 @@
+{
+  "version": 5,
+  "name": "lens_by_parts_wave",
+  "objs": [
+    {
+      "type": "WavePlaneWave",
+      "name": "Illumination",
+      "x": -120,
+      "y": 0,
+      "angle": 0,
+      "amplitude": 1,
+      "interaction": {
+        "enabled": false
+      }
+    },
+    {
+      "type": "WaveInterface",
+      "name": "Flat face",
+      "p1": {
+        "x": 0,
+        "y": -60
+      },
+      "p2": {
+        "x": 0,
+        "y": 60
+      },
+      "eqnSag": "0",
+      "refractiveIndexAfter": 1.2,
+      "interaction": {
+        "enabled": false
+      }
+    },
+    {
+      "type": "WaveInterface",
+      "name": "Curved face",
+      "p1": {
+        "x": 0,
+        "y": -60
+      },
+      "p2": {
+        "x": 0,
+        "y": 60
+      },
+      "eqnSag": "\\frac{-119.227297965+\\sqrt{7052.17880238+1.76\\cdot y^{2}}}{-0.88}",
+      "refractiveIndexAfter": 1,
+      "interaction": {
+        "enabled": false
+      }
+    }
+  ],
+  "width": 760,
+  "height": 520,
+  "origin": {
+    "x": 215,
+    "y": 235
+  },
+  "scale": 1.6,
+  "waveOptics": {
+    "wavelength": 2.4,
+    "sourceDensity": 10,
+    "view": "intensity",
+    "upperCutoff": 2.5
+  },
+  "interaction": {
+    "enabled": false,
+    "create": false,
+    "pan": true,
+    "zoom": true,
+    "keyboard": false
+  },
+  "ui": {
+    "toolbar": false,
+    "objectBar": false,
+    "sidebar": false,
+    "statusBar": false,
+    "celebrate": false
+  },
+  "task": {
+    "title": "The same lens, as a field",
+    "description": "The wedge assignment and its lens, with the rays replaced by the field they stand for: the same plano-convex lens of index 1.2, the same 250-unit focal length, lit at a wavelength that makes the aperture 50 wavelengths across. The focus is no longer a point but a spot about 4 units wide, and it sits a little short of 250, because a beam this far from a plane wave peaks before the geometrical focus.",
+    "goals": [
+      {
+        "id": "focus",
+        "type": "waveIntensityPeak",
+        "title": "The light peaks near the focus",
+        "line": {
+          "p1": {
+            "x": 150,
+            "y": 0
+          },
+          "p2": {
+            "x": 400,
+            "y": 0
+          }
+        },
+        "point": {
+          "x": 246,
+          "y": 0
+        },
+        "radius": 20,
+        "samples": 601,
+        "targetLabel": "focus"
+      },
+      {
+        "id": "spot",
+        "type": "waveSpotSize",
+        "title": "The spot is diffraction-limited",
+        "line": {
+          "p1": {
+            "x": 246,
+            "y": -30
+          },
+          "p2": {
+            "x": 246,
+            "y": 30
+          }
+        },
+        "max": 6,
+        "samples": 641
+      }
+    ]
+  }
+}

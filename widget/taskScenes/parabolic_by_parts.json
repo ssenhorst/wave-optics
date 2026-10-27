@@ -1,0 +1,157 @@
+{
+  "version": 5,
+  "name": "parabolic_by_parts",
+  "objs": [
+    {
+      "type": "Beam",
+      "name": "Source",
+      "p1": {
+        "x": -200,
+        "y": -60
+      },
+      "p2": {
+        "x": -200,
+        "y": 60
+      },
+      "brightness": 1,
+      "lambert": true,
+      "interaction": {
+        "enabled": false
+      }
+    },
+    {
+      "type": "Mirror",
+      "p1": {
+        "x": 190.98825263063065,
+        "y": -1.1136594400282291
+      },
+      "p2": {
+        "x": 179.37528753698132,
+        "y": 31.90359425760208
+      },
+      "interaction": {
+        "move": true,
+        "reshape": false
+      }
+    },
+    {
+      "type": "Mirror",
+      "p1": {
+        "x": 180.6657092549168,
+        "y": -23.51881405358799
+      },
+      "p2": {
+        "x": 162.74974266352922,
+        "y": 6.54808038358799
+      },
+      "interaction": {
+        "move": true,
+        "reshape": false
+      }
+    },
+    {
+      "type": "Mirror",
+      "p1": {
+        "x": 134.1644422093301,
+        "y": -3.1183879718096463
+      },
+      "p2": {
+        "x": 129.6878559841299,
+        "y": 31.594148319397142
+      },
+      "interaction": {
+        "move": true,
+        "reshape": false
+      }
+    },
+    {
+      "type": "Mirror",
+      "p1": {
+        "x": 206.0809196632357,
+        "y": -7.036482546779837
+      },
+      "p2": {
+        "x": 210.6690803367643,
+        "y": 27.661482546779837
+      },
+      "interaction": {
+        "move": true,
+        "reshape": false
+      }
+    },
+    {
+      "type": "Mirror",
+      "p1": {
+        "x": 148.22263429275102,
+        "y": 16.34369144733626
+      },
+      "p2": {
+        "x": 160.51195474834498,
+        "y": 49.11521266225273
+      },
+      "interaction": {
+        "move": true,
+        "reshape": false
+      }
+    },
+    {
+      "type": "Mirror",
+      "p1": {
+        "x": 153.50930281737433,
+        "y": -5.313421125990281
+      },
+      "p2": {
+        "x": 171.82350898414566,
+        "y": 24.512571774179783
+      },
+      "interaction": {
+        "move": true,
+        "reshape": false
+      }
+    }
+  ],
+  "width": 900,
+  "height": 620,
+  "rayModeDensity": 0.049787068367863944,
+  "showRayArrows": true,
+  "maxRayDepth": 1,
+  "origin": {
+    "x": 450,
+    "y": 300
+  },
+  "scale": 2,
+  "interaction": {
+    "enabled": false,
+    "create": false,
+    "pan": true,
+    "zoom": true,
+    "keyboard": false
+  },
+  "ui": {
+    "toolbar": false,
+    "objectBar": false,
+    "sidebar": false,
+    "statusBar": false
+  },
+  "task": {
+    "title": "Build a parabolic mirror out of flat segments",
+    "description": "Each mirror segment is fixed at its own angle, so each can only send its ray in one direction. Slide the segments into the beam so that every ray is reflected into the target spot.",
+    "hint": "A segment reflects its ray in a direction set by its angle alone, so moving it only changes where that reflected ray starts. Place each segment where its reflected ray passes through the target.",
+    "successMessage": "Six flat facets, each at its own angle: together they act as a parabolic mirror.",
+    "goals": [
+      {
+        "id": "focus",
+        "type": "raysThroughPoint",
+        "title": "Send all six rays through the target",
+        "point": {
+          "x": 0,
+          "y": 0
+        },
+        "radius": 5,
+        "count": 6,
+        "minDepth": 1,
+        "targetLabel": "target"
+      }
+    ]
+  }
+}

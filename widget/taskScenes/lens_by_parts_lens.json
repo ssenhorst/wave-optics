@@ -1,0 +1,114 @@
+{
+  "version": 5,
+  "name": "lens_by_parts_lens",
+  "objs": [
+    {
+      "type": "Beam",
+      "name": "Source",
+      "p1": {
+        "x": -120,
+        "y": -60
+      },
+      "p2": {
+        "x": -120,
+        "y": 60
+      },
+      "brightness": 1,
+      "interaction": {
+        "enabled": false
+      }
+    },
+    {
+      "type": "ParamGlass",
+      "name": "Lens",
+      "origin": {
+        "x": 0,
+        "y": 0
+      },
+      "pieces": [
+        {
+          "eqnX": "\\frac{-119.227297965+\\sqrt{7052.17880238+1.76\\cdot \\left(-60+120\\cdot t\\right)^{2}}}{-0.88}",
+          "eqnY": "-60+120\\cdot t",
+          "tMin": 0,
+          "tMax": 1,
+          "tStep": 0.00208
+        },
+        {
+          "eqnX": "4-4\\cdot t",
+          "eqnY": "60",
+          "tMin": 0,
+          "tMax": 1,
+          "tStep": 0.5
+        },
+        {
+          "eqnX": "0",
+          "eqnY": "60-120\\cdot t",
+          "tMin": 0,
+          "tMax": 1,
+          "tStep": 0.5
+        },
+        {
+          "eqnX": "4\\cdot t",
+          "eqnY": "-60",
+          "tMin": 0,
+          "tMax": 1,
+          "tStep": 0.5
+        }
+      ],
+      "curveType": "cubicBezier",
+      "refIndex": 1.2,
+      "partialReflect": false,
+      "interaction": {
+        "enabled": false
+      }
+    }
+  ],
+  "width": 760,
+  "height": 520,
+  "origin": {
+    "x": 215,
+    "y": 235
+  },
+  "scale": 1.6,
+  "rayModeDensity": 0.05,
+  "showRayArrows": true,
+  "maxRayDepth": 6,
+  "interaction": {
+    "enabled": false,
+    "create": false,
+    "pan": true,
+    "zoom": true,
+    "keyboard": false
+  },
+  "ui": {
+    "toolbar": false,
+    "objectBar": false,
+    "sidebar": false,
+    "statusBar": false,
+    "celebrate": false
+  },
+  "theme": {
+    "glass": {
+      "contrast": 2.2
+    }
+  },
+  "task": {
+    "title": "The lens the wedges add up to",
+    "description": "The same beam, the same glass and the same focus as the wedge assignment, with the six facets replaced by the surface they were approximating: one plano-convex lens of index 1.2.",
+    "goals": [
+      {
+        "id": "focus",
+        "type": "raysThroughPoint",
+        "title": "Every ray reaches the focus",
+        "point": {
+          "x": 250,
+          "y": 0
+        },
+        "radius": 5,
+        "count": 6,
+        "minDepth": 2,
+        "targetLabel": "focus"
+      }
+    ]
+  }
+}

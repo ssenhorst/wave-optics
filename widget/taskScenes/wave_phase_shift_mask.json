@@ -1,0 +1,112 @@
+{
+  "version": 5,
+  "name": "wave_phase_shift_mask",
+  "objs": [
+    {
+      "type": "WavePlaneWave",
+      "name": "Illumination",
+      "x": -200,
+      "y": 0,
+      "angle": 0,
+      "amplitude": 1,
+      "interaction": {
+        "enabled": false
+      }
+    },
+    {
+      "type": "WaveSquareGrating",
+      "name": "Mask",
+      "p1": {
+        "x": 0,
+        "y": -140
+      },
+      "p2": {
+        "x": 0,
+        "y": 140
+      },
+      "pitch": 80,
+      "dutyCycle": 0.5,
+      "barTransmission": 0,
+      "barPhase": 0,
+      "refractiveIndexAfter": 1,
+      "interaction": {
+        "edit": false,
+        "properties": {
+          "barTransmission": true,
+          "barPhase": true
+        }
+      }
+    },
+    {
+      "type": "WaveInterface",
+      "name": "Projection lens",
+      "p1": {
+        "x": 300,
+        "y": -150
+      },
+      "p2": {
+        "x": 300,
+        "y": 150
+      },
+      "eqnSag": "0",
+      "eqnAmplitude": "1",
+      "eqnPhase": "-0.0010472\\cdot y^2",
+      "refractiveIndexAfter": 1,
+      "interaction": {
+        "enabled": false
+      }
+    }
+  ],
+  "width": 1100,
+  "height": 900,
+  "origin": {
+    "x": 350,
+    "y": 450
+  },
+  "scale": 1,
+  "waveOptics": {
+    "wavelength": 20.0,
+    "sourceDensity": 10,
+    "view": "intensity",
+    "upperCutoff": 1.5
+  },
+  "interaction": {
+    "enabled": false,
+    "create": false,
+    "pan": true,
+    "zoom": true,
+    "keyboard": false
+  },
+  "ui": {
+    "toolbar": false,
+    "objectBar": true,
+    "sidebar": false,
+    "statusBar": false
+  },
+  "task": {
+    "title": "Print at half the pitch with a phase-shift mask",
+    "description": "The lens images the mask onto the plane at the right. The mask bars are opaque chrome to begin with. Make them clear instead, and give them a phase shift, until the printed lines come out twice as close together as the bars on the mask.",
+    "hint": "Opaque bars leave a strong zero order, which sets the printed period equal to the mask pitch. Bars that pass the light but turn it upside down in phase cancel the zero order, leaving only the two first orders, which beat together at half the period. The phase shift wanted is pi, about 3.14.",
+    "successMessage": "An alternating phase-shift mask: the same mask pitch prints twice as fine, which is why they are used for the tightest layers.",
+    "goals": [
+      {
+        "id": "halfpitch",
+        "type": "waveFringeSpacing",
+        "title": "Print lines 40 units apart",
+        "line": {
+          "p1": {
+            "x": 600,
+            "y": -110
+          },
+          "p2": {
+            "x": 600,
+            "y": 110
+          }
+        },
+        "spacing": 40,
+        "tolerance": 7,
+        "samples": 561
+      }
+    ]
+  }
+}

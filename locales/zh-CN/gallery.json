@@ -1,0 +1,8 @@
+{
+  "galleryPage": {
+    "title": "“射线光学模拟”作品集",
+    "description": "以下列表为使用[“射线光学模拟”网页程序](/simulator)制作的互动式光学演示。欢迎您贡献新项目（请参阅[贡献指南](/contributing/gallery)）。如发现内容有误，请[在GitHub上建立Issue](/github/issues)或发送电子邮件至[ray-optics@phydemo.app](/email)。",
+    "contributors": "贡献者：{{contributors}}",
+    "openInSimulator": "在模拟器中打开"
+  }
+}

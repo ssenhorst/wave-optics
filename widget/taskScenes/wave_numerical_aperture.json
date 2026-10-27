@@ -1,0 +1,109 @@
+{
+  "version": 5,
+  "name": "wave_numerical_aperture",
+  "objs": [
+    {
+      "type": "WavePlaneWave",
+      "name": "Illumination",
+      "x": -200,
+      "y": 0,
+      "angle": 0,
+      "amplitude": 1,
+      "interaction": {
+        "enabled": false
+      }
+    },
+    {
+      "type": "WaveSquareGrating",
+      "name": "Mask",
+      "p1": {
+        "x": 0,
+        "y": -140
+      },
+      "p2": {
+        "x": 0,
+        "y": 140
+      },
+      "pitch": 40,
+      "dutyCycle": 0.5,
+      "barTransmission": 0,
+      "barPhase": 0,
+      "refractiveIndexAfter": 1,
+      "interaction": {
+        "enabled": false
+      }
+    },
+    {
+      "type": "WaveInterface",
+      "name": "Projection lens",
+      "p1": {
+        "x": 300,
+        "y": -60
+      },
+      "p2": {
+        "x": 300,
+        "y": 60
+      },
+      "eqnSag": "0",
+      "eqnAmplitude": "1",
+      "eqnPhase": "-0.0010472\\cdot y^2",
+      "refractiveIndexAfter": 1,
+      "interaction": {
+        "move": false,
+        "reshape": true
+      }
+    }
+  ],
+  "width": 1100,
+  "height": 1000,
+  "origin": {
+    "x": 350,
+    "y": 500
+  },
+  "scale": 1,
+  "waveOptics": {
+    "wavelength": 20.0,
+    "sourceDensity": 10,
+    "view": "intensity",
+    "upperCutoff": 1.6
+  },
+  "interaction": {
+    "enabled": false,
+    "create": false,
+    "pan": true,
+    "zoom": true,
+    "keyboard": false
+  },
+  "ui": {
+    "toolbar": false,
+    "objectBar": true,
+    "sidebar": false,
+    "statusBar": false
+  },
+  "task": {
+    "title": "Open the pupil until the grating prints",
+    "description": "The lens images the mask onto the plane at the right, but its pupil is too small to catch the light the mask diffracts. Drag the ends of the lens to open it up until the lines actually appear, 40 units apart as on the mask.",
+    "hint": "A grating only prints if the lens catches the zero order and at least one first order. The first order leaves at sin(theta) = lambda / pitch = 20 / 40, so at the lens, 300 units away, it arrives about 173 units off the axis.",
+    "successMessage": "That is the Abbe limit: no pattern finer than about lambda over the numerical aperture can be printed, however good the lens is.",
+    "goals": [
+      {
+        "id": "printed",
+        "type": "waveFringeSpacing",
+        "title": "Print the 40-unit lines",
+        "line": {
+          "p1": {
+            "x": 600,
+            "y": -140
+          },
+          "p2": {
+            "x": 600,
+            "y": 140
+          }
+        },
+        "spacing": 40,
+        "tolerance": 8,
+        "samples": 561
+      }
+    ]
+  }
+}

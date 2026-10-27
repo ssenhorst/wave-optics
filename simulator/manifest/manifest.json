@@ -1,0 +1,14 @@
+﻿{
+  "name": "Wave Optics Simulation",
+  "short_name": "Wave Optics",
+  "icons": [
+    {
+      "src": "/wave-optics/img/icon.png",
+      "sizes": "128x128"
+    }
+  ],
+  "start_url": "/wave-optics/simulator/index.html",
+  "display": "standalone",
+  "theme_color": "white",
+  "background_color": "black"
+}

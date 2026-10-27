@@ -1,0 +1,162 @@
+{
+  "version": 5,
+  "name": "4f_system",
+  "objs": [
+    {
+      "type": "AngleSource",
+      "name": "Tip",
+      "interaction": {
+        "enabled": false
+      },
+      "p1": {
+        "x": 200,
+        "y": 380
+      },
+      "p2": {
+        "x": 240.5,
+        "y": 380
+      },
+      "brightness": 0.4,
+      "wavelength": 525,
+      "emisAngle": 30
+    },
+    {
+      "type": "AngleSource",
+      "name": "Base",
+      "interaction": {
+        "enabled": false
+      },
+      "p1": {
+        "x": 200,
+        "y": 400
+      },
+      "p2": {
+        "x": 240,
+        "y": 400
+      },
+      "brightness": 0.4,
+      "wavelength": 625,
+      "emisAngle": 30
+    },
+    {
+      "type": "IdealLens",
+      "name": "Objective",
+      "interaction": {
+        "enabled": false
+      },
+      "p1": {
+        "x": 300,
+        "y": 275
+      },
+      "p2": {
+        "x": 300,
+        "y": 525
+      },
+      "appearance": "realistic",
+      "refIndex": 3.2,
+      "showOpticalAxis": true,
+      "showFocalPoints": true
+    },
+    {
+      "type": "IdealLens",
+      "name": "Relay",
+      "interaction": {
+        "move": true,
+        "moveY": false,
+        "reshape": false,
+        "properties": {
+          "focalLength": true
+        }
+      },
+      "p1": {
+        "x": 608.5,
+        "y": 225
+      },
+      "p2": {
+        "x": 608.5,
+        "y": 575
+      },
+      "focalLength": 207,
+      "appearance": "realistic",
+      "refIndex": 3.2,
+      "showFocalPoints": true
+    },
+    {
+      "type": "Blocker",
+      "p1": {
+        "x": 1401.25,
+        "y": 161.75
+      },
+      "p2": {
+        "x": 1401.25,
+        "y": 653.5
+      }
+    }
+  ],
+  "width": 3400,
+  "height": 1400,
+  "rayModeDensity": 0.7492369427732102,
+  "origin": {
+    "x": 85.8330637357567,
+    "y": -237.09654752438337
+  },
+  "scale": 2.225075924421508,
+  "simulateColors": true,
+  "interaction": {
+    "enabled": false,
+    "create": false,
+    "pan": true,
+    "zoom": true,
+    "keyboard": false
+  },
+  "ui": {
+    "toolbar": false,
+    "objectBar": false,
+    "sidebar": false,
+    "statusBar": false
+  },
+  "task": {
+    "title": "Project the church onto the screen",
+    "description": "The objective is fixed and its focal points are marked. Slide the second lens along the optical axis, and drag its focal point to change its focal length, until both ends of the church are focused on the two marks.",
+    "hint": "Two lenses image in turn: the objective forms an image in mid air, and the second lens re-images that onto the screen. Each real imaging turns the picture over, so after two of them the church is the right way up again.",
+    "successMessage": "The church is projected upright and twice life size.",
+    "goals": [
+      {
+        "id": "tip",
+        "type": "raysConverge",
+        "title": "Focus the top of the church on the upper mark",
+        "source": "Tip",
+        "point": {
+          "x": 1400.5,
+          "y": 501
+        },
+        "radius": 18,
+        "minDepth": 2,
+        "targetLabel": "top"
+      },
+      {
+        "id": "base",
+        "type": "raysConverge",
+        "title": "Focus the foot of the church on the lower mark",
+        "source": "Base",
+        "point": {
+          "x": 1400.5,
+          "y": 400.5
+        },
+        "radius": 18,
+        "minDepth": 2,
+        "targetLabel": "foot"
+      }
+    ]
+  },
+  "illustration": {
+    "picture": "church",
+    "top": "Tip",
+    "bottom": "Base",
+    "imageGoals": [
+      "tip",
+      "base"
+    ],
+    "opacity": 0.9
+  }
+}

@@ -1,0 +1,113 @@
+{
+  "version": 5,
+  "name": "wave_zone_plate",
+  "objs": [
+    {
+      "type": "WavePlaneWave",
+      "name": "Illumination",
+      "x": -250,
+      "y": 0,
+      "angle": 0,
+      "amplitude": 1,
+      "interaction": {
+        "enabled": false
+      }
+    },
+    {
+      "type": "WaveZonePlate",
+      "name": "Zone plate",
+      "p1": {
+        "x": 0,
+        "y": -150
+      },
+      "p2": {
+        "x": 0,
+        "y": 150
+      },
+      "focalLength": 400,
+      "phaseReversing": false,
+      "refractiveIndexAfter": 1,
+      "interaction": {
+        "move": false,
+        "reshape": true,
+        "edit": false,
+        "properties": {
+          "focalLength": true
+        }
+      }
+    }
+  ],
+  "width": 1400,
+  "height": 1000,
+  "origin": {
+    "x": 300,
+    "y": 500
+  },
+  "scale": 1,
+  "waveOptics": {
+    "wavelength": 20.0,
+    "sourceDensity": 10,
+    "view": "intensity",
+    "upperCutoff": 3.0
+  },
+  "interaction": {
+    "enabled": false,
+    "create": false,
+    "pan": true,
+    "zoom": true,
+    "keyboard": false
+  },
+  "ui": {
+    "toolbar": false,
+    "objectBar": true,
+    "sidebar": false,
+    "statusBar": false
+  },
+  "task": {
+    "title": "Focus the beam on the mark, and sharpen it",
+    "description": "A Fresnel zone plate focuses by diffraction. Set its focal length so the focus lands on the mark, then drag its ends to open it up until the focal spot is narrow enough.",
+    "hint": "The focus sits a focal length behind the plate. How narrow it can be is set by how much of the wavefront the plate collects: the spot is about lambda*f divided by the full height of the plate, so opening it up is the only way to sharpen the focus.",
+    "successMessage": "A wider aperture collects a wider range of angles, and it is that range, the numerical aperture, that sets how small a spot can be.",
+    "goals": [
+      {
+        "id": "focus",
+        "type": "waveIntensityPeak",
+        "title": "Put the focus on the mark",
+        "line": {
+          "p1": {
+            "x": 150,
+            "y": 0
+          },
+          "p2": {
+            "x": 1150,
+            "y": 0
+          }
+        },
+        "point": {
+          "x": 700,
+          "y": 0
+        },
+        "radius": 45,
+        "samples": 701,
+        "targetLabel": "focus"
+      },
+      {
+        "id": "spot",
+        "type": "waveSpotSize",
+        "title": "Bring the spot below 32 units across",
+        "line": {
+          "p1": {
+            "x": 700,
+            "y": -90
+          },
+          "p2": {
+            "x": 700,
+            "y": 90
+          }
+        },
+        "max": 32,
+        "samples": 481
+      }
+    ]
+  }
+}

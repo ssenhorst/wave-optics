@@ -1,0 +1,21 @@
+{
+  "galleryPage": {
+    "title": "Gallery",
+    "description": "Simulations that can be used as interactive demos of optics, for [the wave-optics simulator](/wave) and for [the ray simulator](/simulator) it was forked from. You are welcome to contribute new items. See [the contribution guide](/contributing/gallery) for more information. To report a mistake, please [open an issue on GitHub](/github/issues) or email [ray-optics@phydemo.app](/email).",
+    "contributors_one": "Contributor: {{contributors}}",
+    "contributors_other": "Contributors: {{contributors}}",
+    "openInSimulator": "Open in Simulator",
+    "waveOptics": {
+      "title": "Wave optics",
+      "description": "Worked examples for the wave-optics simulator, where the light is a complex scalar field summed from point sources. Each is built to fit the window it is loaded into, so it fills whatever screen it opens on."
+    },
+    "rayOptics": {
+      "title": "Ray optics",
+      "description": "Scenes for the ray simulator this project was forked from, which traces rays rather than summing fields."
+    },
+    "assignments": {
+      "title": "Assignments",
+      "description": "Set pieces rather than demonstrations: each states a goal, lets you change only what the exercise is about, and scores how close you are as you work. Every one is a single self-contained page, so it can be embedded in a course platform that allows no external requests."
+    }
+  }
+}

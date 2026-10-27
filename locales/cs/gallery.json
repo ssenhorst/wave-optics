@@ -1,0 +1,10 @@
+{
+  "galleryPage": {
+    "title": "Galerie Ray Optics",
+    "description": "Toto je soubor simulací vytvořených pomocí [webové aplikace](/simulator), které lze použít jako interaktivní ukázky optiky. Budeme rádi, pokud přispějete novými položkami. Podrobnosti najdete v [průvodci pro přispěvovatele](/contributing/gallery). Chcete-li nahlásit chybu, otevřete issue na GitHubu nebo napište na ray-optics@phydemo.app.",
+    "contributors_one": "Přispěvovatel: {{contributors}}",
+    "contributors_few": "Přispěvovatelé: {{contributors}}",
+    "contributors_other": "Přispěvovatelé: {{contributors}}",
+    "openInSimulator": "Otevřít v simulátoru"
+  }
+}
