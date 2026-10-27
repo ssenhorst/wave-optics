@@ -16,8 +16,9 @@
 
 import CanvasRenderer from '../CanvasRenderer.js';
 import WaveFieldEngineWebGL2 from './WaveFieldEngineWebGL2.js';
-import { buildWaveModel, resolveWaveSettings } from './waveSceneModel.js';
+import { buildWaveModel, resolveWaveSettings, isTimeDependent } from './waveSceneModel.js';
 import { AdaptiveResolution } from './adaptiveResolution.js';
+import { sceneTimeSpan, averagingTimes } from './timeDomain.js';
 
 /**
  * How long after the last edit the field is recomputed at full resolution.
@@ -30,6 +31,15 @@ const REFINE_DELAY_MS = 150;
  * only when there is no editor to ask.
  */
 const INTERACTION_WINDOW_MS = 200;
+
+/**
+ * How long one pass of a time-dependent scene takes to play, in seconds of wall
+ * time. The time-harmonic animation shows one optical cycle at half a cycle per
+ * second; a pulse crossing a view many wavelengths wide needs to move much
+ * faster than that to be watchable, so playback is paced by the scene's own
+ * time span instead.
+ */
+const TIME_MODE_LOOP_SECONDS = 12;
 
 /**
  * The wave-optics counterpart of {@link Simulator}: it presents the same
@@ -121,6 +131,24 @@ class WaveSimulator {
      */
     this.fieldReadback = null;
 
+    /**
+     * @property {boolean} isTimeMode - Whether the last model has sources with
+     * a time dependence, so that the field shown is the one at {@link time}
+     * rather than the time-harmonic one.
+     */
+    this.isTimeMode = false;
+
+    /**
+     * @property {number} timeSpan - For a time-dependent scene, the optical
+     * cycles from time zero until the last signal has left the view. Playback
+     * runs over this span and starts again.
+     */
+    this.timeSpan = 0;
+
+    /** @property {boolean} isCapturing - Whether a recording is driving the clock. */
+    this.isCapturing = false;
+    this.captureState = null;
+
     /** Whether the colour scale still needs reading back for this change. */
     this.needsStats = true;
     this.animationFrameId = -1;
@@ -194,7 +222,9 @@ class WaveSimulator {
     if (!this.engine) return;
 
     const settings = resolveWaveSettings(this.scene);
-    const isInteracting = this.isInteracting();
+    // A playing time-dependent scene computes every frame, so an edit made
+    // while it plays is held to the interactive budget too.
+    const isInteracting = this.isInteracting() || (this.isTimeMode && this.isAnimating);
 
     if (this.refineTimerId !== -1) {
       clearTimeout(this.refineTimerId);
@@ -275,6 +305,11 @@ class WaveSimulator {
       clearTimeout(this.refineTimerId);
       this.refineTimerId = -1;
     }
+    // A time-dependent scene recomputes every frame while it plays, so it stays
+    // at the resolution that fits a frame; the climb resumes when it stops.
+    if (this.isTimeMode && this.isAnimating) return;
+    // A recording must not change resolution between its frames.
+    if (this.isCapturing) return;
     const next = this.adaptive.nextStep(this.currentResolution, target, this.lastComputeMs);
     if (next === null) return;
 
@@ -329,6 +364,13 @@ class WaveSimulator {
         // even on the passes the colour scale does not.
         this.fieldReadback = this.engine.readField();
       }
+      // The colour scale and the measurements above come from the time-harmonic
+      // field, which every envelope is a modulation of. That keeps the scale
+      // steady while a pulse crosses the view instead of rescaling every frame.
+      this.isTimeMode = isTimeDependent(model);
+      this.timeSpan = this.isTimeMode ? sceneTimeSpan(model) : 0;
+      if (this.isTimeMode) this.engine.computeFieldAtTime(model, this.time);
+
       this.fieldSerial++;
       this.error = null;
     } catch (e) {
@@ -348,6 +390,8 @@ class WaveSimulator {
       gridHeight: model.grid.height,
       computeMs: this.lastComputeMs,
       referenceAmplitude: this.referenceAmplitude,
+      isTimeMode: this.isTimeMode,
+      timeSpan: this.timeSpan,
     });
   }
 
@@ -524,22 +568,42 @@ class WaveSimulator {
   /**
    * Start animating the instantaneous-field view.
    *
-   * Only {@link WaveSimulator#render} runs per frame: the complex field is
-   * time-independent and stays cached in its texture, so the frame rate does
-   * not depend on how many sources there are.
+   * For a time-harmonic scene only {@link WaveSimulator#render} runs per
+   * frame: the complex field is time-independent and stays cached in its
+   * texture, so the frame rate does not depend on how many sources there are.
+   * A scene with time-dependent sources computes the field at each frame's
+   * instant, which costs about as much as one time-harmonic computation.
    */
   startAnimation() {
     if (this.isAnimating || typeof requestAnimationFrame === 'undefined') return;
     this.isAnimating = true;
     this.animationLastTime = performance.now();
 
+    if (this.isTimeMode) {
+      // Every frame is a full field pass, so drop to the resolution that fits
+      // the interactive budget rather than keep the settled one.
+      const target = resolveWaveSettings(this.scene).targetResolution;
+      this.computeField(
+        (sourceCount) => this.adaptive.chooseInitial(sourceCount, target, true), true
+      );
+      this.scheduleRefine(target);
+    }
+
     const step = () => {
       if (!this.isAnimating) return;
       const now = performance.now();
       const elapsed = (now - this.animationLastTime) / 1000;
       this.animationLastTime = now;
-      this.time += elapsed * this.animationSpeed;
+      if (this.isTimeMode) {
+        // Loop over the scene's span, so a pulse crosses the view and comes back.
+        this.time += elapsed * this.timeSpan / TIME_MODE_LOOP_SECONDS;
+        if (this.time > this.timeSpan) this.time = 0;
+      } else {
+        this.time += elapsed * this.animationSpeed;
+      }
+      this.computeFrame();
       this.render();
+      this.redrawTimeMeasurements();
       this.emit('timeChange', { time: this.time });
       this.animationFrameId = requestAnimationFrame(step);
     };
@@ -555,7 +619,121 @@ class WaveSimulator {
       cancelAnimationFrame(this.animationFrameId);
       this.animationFrameId = -1;
     }
+    // Paused on a frame, the field can afford the settled resolution again.
+    if (this.isTimeMode) this.scheduleFieldUpdate();
     this.emit('animationChange', { isAnimating: false });
+  }
+
+  /**
+   * Bring the field texture to the current time, for a time-dependent scene.
+   * A time-harmonic field needs nothing: its texture holds it for all time.
+   * @private
+   */
+  computeFrame() {
+    if (!this.isTimeMode || !this.engine || !this.lastModel) return;
+    try {
+      this.engine.computeFieldAtTime(this.lastModel, this.time);
+    } catch (e) {
+      this.error = e.message;
+    }
+  }
+
+  /**
+   * Hold the picture steady for a recording: pause playback and the resolution
+   * climb, so every frame is drawn from the same model at the same resolution,
+   * and the recording drives the clock itself through {@link setTime}.
+   */
+  beginCapture() {
+    this.captureState = { wasAnimating: this.isAnimating, time: this.time };
+    this.isCapturing = true;
+    if (this.refineTimerId !== -1) {
+      clearTimeout(this.refineTimerId);
+      this.refineTimerId = -1;
+    }
+    if (this.isAnimating) {
+      // Stopped directly rather than through stopAnimation, which would start
+      // climbing back to the settled resolution in the middle of the recording.
+      this.isAnimating = false;
+      if (this.animationFrameId !== -1) cancelAnimationFrame(this.animationFrameId);
+      this.animationFrameId = -1;
+    }
+  }
+
+  /** Put the clock and playback back as they were before {@link beginCapture}. */
+  endCapture() {
+    const state = this.captureState ?? { wasAnimating: false, time: this.time };
+    this.isCapturing = false;
+    this.captureState = null;
+    this.setTime(state.time);
+    if (state.wasAnimating) {
+      // startAnimation returns early while isAnimating is set, and the loop
+      // itself was cancelled, so it is restarted from scratch.
+      this.startAnimation();
+    } else {
+      this.emit('animationChange', { isAnimating: false });
+    }
+  }
+
+  /**
+   * Redraw the object layer if a measurement shows the field at the current
+   * instant, which a time-harmonic redraw never needs but a moving pulse does.
+   * @private
+   */
+  redrawTimeMeasurements() {
+    if (!this.isTimeMode) return;
+    if ((this.scene.objs ?? []).some((obj) => obj.readsTimeField?.())) this.drawObjects();
+  }
+
+  /**
+   * The time-dependent field `Psi` at arbitrary points, at the current instant.
+   *
+   * Evaluated on the GPU against the same histories the view was drawn from:
+   * the CPU reference recursion is far too slow through more than one
+   * interface to run per frame.
+   *
+   * @param {Array<{x: number, y: number}>} points
+   * @returns {Float32Array|null} Interleaved real and imaginary parts.
+   */
+  timeFieldAt(points) {
+    if (!this.isTimeMode || !this.engine || !this.lastModel || points.length === 0) return null;
+    try {
+      return this.engine.fieldAtPointsOverTime(this.lastModel, points, [this.time]);
+    } catch (e) {
+      this.error = e.message;
+      return null;
+    }
+  }
+
+  /**
+   * The time-averaged intensity `<|Psi|^2>` at arbitrary points, over the
+   * instants {@link averagingTimes} picks for the current model.
+   *
+   * This walks the histories through the whole averaging span, so the next
+   * frame refills them for the current time; it is meant to be computed once
+   * per change of the scene and cached, not per frame.
+   *
+   * @param {Array<{x: number, y: number}>} points
+   * @returns {Float64Array|null}
+   */
+  timeAveragedIntensityAt(points) {
+    if (!this.isTimeMode || !this.engine || !this.lastModel || points.length === 0) return null;
+    const times = averagingTimes(this.lastModel);
+    let field;
+    try {
+      field = this.engine.fieldAtPointsOverTime(this.lastModel, points, times);
+    } catch (e) {
+      this.error = e.message;
+      return null;
+    }
+    const out = new Float64Array(points.length);
+    for (let k = 0; k < times.length; k++) {
+      for (let p = 0; p < points.length; p++) {
+        const at = (k * points.length + p) * 2;
+        out[p] += field[at] * field[at] + field[at + 1] * field[at + 1];
+      }
+    }
+    for (let p = 0; p < points.length; p++) out[p] /= times.length;
+    return out;
   }
 
   /**
@@ -564,7 +742,9 @@ class WaveSimulator {
    */
   setTime(time) {
     this.time = time;
+    this.computeFrame();
     this.render();
+    this.redrawTimeMeasurements();
     this.emit('timeChange', { time: this.time });
   }
 

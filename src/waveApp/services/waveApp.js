@@ -33,6 +33,7 @@ import WaveSimulator from '../../core/waveOptics/WaveSimulator.js';
 import { createWaveRenderingContext } from '../../core/waveOptics/WaveFieldEngineWebGL2.js';
 import { objBar } from '../../app/services/objBar.js';
 import { saveAs } from 'file-saver';
+import { saveImage, saveVideo } from './exportMedia.js';
 import { buildExampleScene, EXAMPLE_SCENES } from '../exampleScenes.js';
 import { resolveUiOptions } from '../../core/uiOptions.js';
 
@@ -406,6 +407,8 @@ function bindSimulatorEvents() {
       gridWidth: e.gridWidth,
       gridHeight: e.gridHeight,
       computeMs: e.computeMs,
+      isTimeMode: e.isTimeMode,
+      timeSpan: e.timeSpan,
       error: simulator.getError(),
     });
   });
@@ -482,6 +485,22 @@ function loadExample(id) {
 function saveScene() {
   const blob = new Blob([scene.toJSON()], { type: 'application/json;charset=utf-8' });
   saveAs(blob, (scene.name || 'wave-scene') + '.json');
+}
+
+/** Save the canvas as a PNG. */
+function exportImage() {
+  return saveImage(scene.name || 'wave-scene');
+}
+
+/**
+ * Record the canvas as an MP4: one optical cycle (`'cycle'`) or a
+ * time-dependent scene's whole span (`'span'`).
+ * @param {'cycle'|'span'} kind
+ * @param {Object} [options] - `onProgress` and `isCancelled`, see `saveVideo`.
+ * @returns {Promise<boolean>} Whether a file was saved.
+ */
+function exportVideo(kind, options = {}) {
+  return saveVideo({ simulator, kind, name: scene.name || 'wave-scene', ...options });
 }
 
 /**
@@ -626,6 +645,8 @@ export const app = {
   clearScene,
   loadExample,
   saveScene,
+  exportImage,
+  exportVideo,
   openScene,
   syncUrl,
   copyLink,

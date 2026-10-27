@@ -19,7 +19,8 @@ import LineObjMixin from '../LineObjMixin.js';
 import geometry from '../../geometry.js';
 import i18next from 'i18next';
 import { amplitudePhaseColor } from '../../waveOptics/oklch.js';
-import { collectInterfaces } from '../../waveOptics/waveSceneModel.js';
+import { collectInterfaces, subspaceIndexAt } from '../../waveOptics/waveSceneModel.js';
+import { farFieldTimeShift } from '../../waveOptics/timeDomain.js';
 import {
   fieldAt, fieldSerial, currentModel, drawLabel, MEASURE_COLOR, VIRTUAL_COLOR
 } from './waveMeasurement.js';
@@ -78,6 +79,9 @@ const TICK_COUNT = 8;
  * @property {number} plotHeight - Height of the curve at full scale, in pixels.
  * @property {number} sampleCount - Points taken across the screen.
  * @property {boolean} alwaysShowPlot - Draw the plot even when not selected.
+ * @property {string} timeAveraging - In a time-dependent scene, whether the
+ *   intensity plot shows the instant on the clock ('instant') or the average
+ *   over time ('average'). The other plots always show the instant.
  */
 class WaveScreen extends LineObjMixin(BaseSceneObj) {
   static type = 'WaveScreen';
@@ -91,8 +95,23 @@ class WaveScreen extends LineObjMixin(BaseSceneObj) {
     farField: false,
     plotHeight: DEFAULT_PLOT_HEIGHT,
     sampleCount: DEFAULT_SAMPLE_COUNT,
-    alwaysShowPlot: false
+    alwaysShowPlot: false,
+    timeAveraging: 'average'
   };
+
+  /**
+   * A screen placed with the tool shows its plot straight away, since reading
+   * the plot is what a screen is for. The tool passes an empty object, or a
+   * copy of a selected screen whose setting it then keeps; loaded screens keep
+   * whatever they were saved with, so the stored default stays as it was and
+   * no existing scene changes.
+   * @param {Scene} scene
+   * @param {Object} [jsonObj]
+   */
+  constructor(scene, jsonObj) {
+    super(scene, jsonObj);
+    if (!jsonObj || Object.keys(jsonObj).length === 0) this.alwaysShowPlot = true;
+  }
 
   static getDescription(objData, scene, detailed = false) {
     return i18next.t('main:waveTools.WaveScreen.title');
@@ -104,6 +123,14 @@ class WaveScreen extends LineObjMixin(BaseSceneObj) {
       intensity: i18next.t('simulator:waveSceneObjs.common.plotIntensity'),
       real: i18next.t('simulator:waveSceneObjs.common.plotReal'),
       amplitudePhase: i18next.t('simulator:waveSceneObjs.common.plotAmplitudePhase'),
+    };
+  }
+
+  /** The two readings of a time-dependent intensity, as a dropdown's options. */
+  static timeAveragingOptions() {
+    return {
+      average: i18next.t('simulator:waveSceneObjs.common.timeAveragings.average'),
+      instant: i18next.t('simulator:waveSceneObjs.common.timeAveragings.instant'),
     };
   }
 
@@ -136,6 +163,11 @@ class WaveScreen extends LineObjMixin(BaseSceneObj) {
       { key: 'plotHeight', type: 'number', label: i18next.t('simulator:waveSceneObjs.common.plotHeight') },
       { key: 'sampleCount', type: 'number', label: i18next.t('simulator:waveSceneObjs.common.screenSamples') },
       { key: 'alwaysShowPlot', type: 'boolean', label: i18next.t('simulator:waveSceneObjs.common.alwaysShowPlot') },
+      {
+        key: 'timeAveraging', type: 'dropdown',
+        label: i18next.t('simulator:waveSceneObjs.common.timeAveraging'),
+        options: WaveScreen.timeAveragingOptions(),
+      },
     ];
   }
 
@@ -162,6 +194,17 @@ class WaveScreen extends LineObjMixin(BaseSceneObj) {
       '<p>' + i18next.t('simulator:waveSceneObjs.common.plotModeInfo') + '</p>',
       true
     );
+    // Only an intensity has a time average worth showing: the average of a
+    // real field or of a phase is zero, or nothing.
+    if (this.isTimeResolved() && this.plotMode === 'intensity') {
+      objBar.createDropdown(
+        i18next.t('simulator:waveSceneObjs.common.timeAveraging'), this.timeAveraging,
+        WaveScreen.timeAveragingOptions(),
+        function (obj, value) { obj.timeAveraging = value; },
+        '<p>' + i18next.t('simulator:waveSceneObjs.common.timeAveragingInfo') + '</p>',
+        true
+      );
+    }
     objBar.createDropdown(
       i18next.t('simulator:waveSceneObjs.common.units'), this.units,
       WaveScreen.unitOptions(),
@@ -376,7 +419,7 @@ class WaveScreen extends LineObjMixin(BaseSceneObj) {
       axis.push(angle * 180 / Math.PI);
     }
     return {
-      probes, anchors, normals, axis, origin, drawRadius,
+      probes, anchors, normals, axis, origin, drawRadius, probeRadius,
       axisLabel: i18next.t('simulator:waveSceneObjs.common.axisAngle'),
       isAngular: true,
     };
@@ -385,6 +428,64 @@ class WaveScreen extends LineObjMixin(BaseSceneObj) {
   /** This object evaluates the field itself rather than reading the grid. */
   readsField() {
     return false;
+  }
+
+  /** @returns {boolean} Whether the screen reads the time-dependent field. */
+  isTimeResolved() {
+    return Boolean(this.scene?.simulator?.isTimeMode);
+  }
+
+  /** Whether the plot shows the field at the current instant. */
+  showsInstant() {
+    return this.isTimeResolved() &&
+      !(this.plotMode === 'intensity' && this.timeAveraging === 'average');
+  }
+
+  /**
+   * Whether the plot has to be redrawn as the clock moves: only when it shows
+   * the instant, and only when it is shown at all.
+   * @returns {boolean}
+   */
+  readsTimeField() {
+    return this.showsInstant() && (this.alwaysShowPlot || this.isSelected());
+  }
+
+  /**
+   * The points the field is read at, so the time-domain histories cover the
+   * delays to them even where the screen reaches outside the view.
+   *
+   * A far field is read in retarded time (see `farFieldTimeShift`), whose
+   * lookups reach back by the spread of delays across the last surface. A box
+   * around the far-field origin as large as the surface is deep and wide
+   * stands for that, so the window covers it however curved the surface is.
+   * @returns {Array<{x: number, y: number}>}
+   */
+  getMeasurementPoints() {
+    if (!this.isValid()) return [];
+    if (!this.farField) return [this.p1, this.p2];
+    const origin = this.farFieldOrigin();
+    const range = this.lastSurface()?.getAxialRange();
+    if (!origin || !range) return [];
+    const reach = Math.hypot(range.max - range.min, origin.halfWidth);
+    return [
+      { x: origin.x - reach, y: origin.y - reach },
+      { x: origin.x + reach, y: origin.y + reach },
+    ];
+  }
+
+  /**
+   * The probes to evaluate in a time-dependent scene: the far-field ones carry
+   * the shift that puts them on retarded time.
+   * @private
+   */
+  timeProbes(layout) {
+    if (!this.farField) return layout.probes;
+    const model = currentModel(this.scene);
+    const first = layout.probes[0];
+    const axisSign = model.settings?.axisSign ?? 1;
+    const j = subspaceIndexAt(model.interfaces, first.x, first.y, axisSign);
+    const timeShift = farFieldTimeShift(model, j, layout.origin, layout.probeRadius);
+    return layout.probes.map((point) => ({ x: point.x, y: point.y, timeShift }));
   }
 
   /**
@@ -400,8 +501,11 @@ class WaveScreen extends LineObjMixin(BaseSceneObj) {
    */
   measure() {
     const serial = fieldSerial(this.scene);
+    const timeResolved = this.isTimeResolved();
+    const instant = this.showsInstant();
     const key = JSON.stringify([
       serial, this.p1, this.p2, this.p3, this.farField, this.plotMode, this.samples(),
+      timeResolved, instant, instant ? this.scene.simulator.time : null,
     ]);
     if (this._cache?.key === key) return this._cache.result;
 
@@ -415,10 +519,22 @@ class WaveScreen extends LineObjMixin(BaseSceneObj) {
     const layout = this.samplePoints();
     if (!layout || !currentModel(this.scene)) return null;
 
-    const field = fieldAt(this.scene, layout.probes);
+    const count = this.samples();
+    let field;
+    if (this.showsInstant()) {
+      field = this.scene.simulator.timeFieldAt(this.timeProbes(layout));
+    } else if (this.isTimeResolved()) {
+      // A time average has no phase; the amplitude is the root of the mean
+      // intensity, so the intensity plot shows the mean intensity itself.
+      const intensities = this.scene.simulator.timeAveragedIntensityAt(this.timeProbes(layout));
+      if (!intensities) return null;
+      field = new Float64Array(count * 2);
+      for (let i = 0; i < count; i++) field[i * 2] = Math.sqrt(intensities[i]);
+    } else {
+      field = fieldAt(this.scene, layout.probes);
+    }
     if (!field) return null;
 
-    const count = this.samples();
     const amplitudes = new Float64Array(count);
     const phases = new Float64Array(count);
     let maxAmplitude = 0;
@@ -687,8 +803,19 @@ class WaveScreen extends LineObjMixin(BaseSceneObj) {
       ? `${layout.axis[0].toFixed(1)}° … ${layout.axis[last].toFixed(1)}°`
       : this.extentText(layout, wavelength);
 
+    const lines = [i18next.t(`simulator:waveSceneObjs.common.plot${this.plotModeKey()}`)];
+    if (this.isTimeResolved()) {
+      const time = this.scene.simulator.time.toFixed(1);
+      if (!this.showsInstant()) {
+        lines.push(i18next.t('simulator:waveSceneObjs.common.plotTimeAveraged'));
+      } else if (this.farField) {
+        lines.push(i18next.t('simulator:waveSceneObjs.common.plotAtRetardedTime', { time }));
+      } else {
+        lines.push(i18next.t('simulator:waveSceneObjs.common.plotAtTime', { time }));
+      }
+    }
     drawLabel(canvasRenderer, [
-      i18next.t(`simulator:waveSceneObjs.common.plot${this.plotModeKey()}`),
+      ...lines,
       `${layout.axisLabel}: ${range}`,
       i18next.t('simulator:waveSceneObjs.common.plotPeak', {
         value: measurement.maxAmplitude.toPrecision(3),

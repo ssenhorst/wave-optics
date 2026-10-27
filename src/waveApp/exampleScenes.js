@@ -143,6 +143,45 @@ export const EXAMPLE_SCENES = [
     ], { upperCutoff: 0.7 }),
   },
   {
+    id: 'incoherentDoubleSlit',
+    name: 'Double slit, incoherent source',
+    description: "Young's experiment lit by an extended source whose points are mutually " +
+      'incoherent: the time-averaged fringes on the screen lose contrast as the source widens.',
+    build: (width, height) => {
+      const sourceX = width * 0.12;
+      const slitX = width * 0.36;
+      const spacing = 6 * WAVELENGTH;
+      // van Cittert-Zernike: a uniformly incoherent source of width w, a distance
+      // L from slits d apart, gives fringes of visibility |sinc(pi w d / lambda L)|.
+      // This width puts it near one half, so there are fringes to see fading;
+      // widening the source past lambda L / d washes them out altogether.
+      const sourceWidth = 1.9 * WAVELENGTH * (slitX - sourceX) / (Math.PI * spacing);
+      return build('Double slit, incoherent source', [
+        lineSource(sourceX, height * 0.5 - sourceWidth / 2, height * 0.5 + sourceWidth / 2, {
+          signalType: 'noise',
+          signalDuration: 4,
+          // The shortest coherence length a line source allows: half a wavelength.
+          spatialCoherence: 'partial',
+          coherenceLength: WAVELENGTH / 2,
+        }),
+        element('WaveMultiSlit', slitX, height * 0.22, height * 0.78, {
+          slitCount: 2, slitWidth: 1.5 * WAVELENGTH, slitSpacing: spacing,
+          profileDisplay: 'amplitudePhase',
+        }),
+        {
+          type: 'WaveScreen',
+          p1: { x: round(width * 0.85), y: round(height * 0.15) },
+          p2: { x: round(width * 0.85), y: round(height * 0.85) },
+          plotMode: 'intensity',
+          timeAveraging: 'average',
+          alwaysShowPlot: true,
+        },
+        // The short source is far brighter than anything past the slits, so the
+        // scale saturates well below its peak to show the light that got through.
+      ], { upperCutoff: 0.2, animated: true });
+    },
+  },
+  {
     id: 'fiveSlits',
     name: 'Five slits',
     description: 'More slits sharpen the fringes without moving them.',

@@ -27,6 +27,42 @@
         </button>
       </div>
 
+      <!-- Export -->
+      <div class="wave-menu">
+        <button class="btn btn-sm" :class="recording ? 'btn-primary' : 'btn-outline-light'"
+          :title="recording ? 'Stop the recording' : 'Save the canvas as an image or a video'"
+          @click="recording ? cancelRecording() : toggleMenu('export')">
+          {{ recording ? `Recording ${Math.round(recordProgress * 100)}%` : 'Export' }}
+          <template v-if="!recording">&#9662;</template>
+        </button>
+        <ul class="wave-menu-list wave-export-list" v-show="openMenu === 'export' && !recording">
+          <li>
+            <button type="button" @click="onExportImage">
+              <span class="wave-menu-text">
+                <span class="wave-menu-label">Image (PNG)</span>
+                <span class="wave-menu-hint">The canvas as it is now.</span>
+              </span>
+            </button>
+          </li>
+          <li>
+            <button type="button" :disabled="!canRecordCycle" @click="onExportVideo('cycle')">
+              <span class="wave-menu-text">
+                <span class="wave-menu-label">One cycle (MP4)</span>
+                <span class="wave-menu-hint">{{ cycleHint }}</span>
+              </span>
+            </button>
+          </li>
+          <li>
+            <button type="button" :disabled="!isTimeMode" @click="onExportVideo('span')">
+              <span class="wave-menu-text">
+                <span class="wave-menu-label">Whole time span (MP4)</span>
+                <span class="wave-menu-hint">{{ spanHint }}</span>
+              </span>
+            </button>
+          </li>
+        </ul>
+      </div>
+
       <span class="wave-divider"></span>
 
       <!-- Examples -->
@@ -90,12 +126,13 @@
       <!-- Animation -->
       <button class="btn btn-sm" :class="isAnimating ? 'btn-primary' : 'btn-outline-light'"
         @click="toggleAnimation" :disabled="!isTimeResolved"
-        :title="isTimeResolved ? 'Animate the instantaneous field' : 'The intensity view is time-averaged, so there is nothing to animate'">
+        :title="playTitle">
         {{ isAnimating ? 'Pause' : 'Play' }}
       </button>
-      <input type="range" class="form-range wave-range" min="0" max="1" step="0.002"
-        :value="timeFraction" @input="onScrubTime" :disabled="!isTimeResolved"
+      <input type="range" class="form-range wave-range" min="0" :max="scrubMax" :step="scrubStep"
+        :value="scrubValue" @input="onScrubTime" :disabled="!isTimeResolved"
         :title="`Time: ${timeLabel}`">
+      <span v-if="isTimeMode" class="wave-time-label">{{ timeLabel }}</span>
     </div>
 
     <input type="file" ref="fileInput" accept=".json" style="display:none" @change="onFileChosen">
@@ -172,15 +209,71 @@ export default {
     onUnmounted(() => document.removeEventListener('click', closeOnOutsideClick));
 
     const view = store.view;
-    // The intensity view is time-averaged; the other two show an instant.
-    const isTimeResolved = computed(() => view.value !== 'intensity');
+    // A time-dependent scene is shown at an instant in every view. Otherwise the
+    // intensity view is time-averaged and only the other two show an instant.
+    const isTimeMode = computed(() => store.state.status.isTimeMode);
+    const isTimeResolved = computed(() => view.value !== 'intensity' || isTimeMode.value);
 
-    // The field view shows one optical cycle; the scrubber spans exactly that.
+    // A time-harmonic field repeats every optical cycle, so the scrubber spans
+    // exactly one. A time-dependent scene spans until its last signal has
+    // crossed the view.
     const timeFraction = computed(() => store.state.time - Math.floor(store.state.time));
+    const timeSpan = computed(() => Math.max(store.state.status.timeSpan, 1));
+    const scrubMax = computed(() => (isTimeMode.value ? timeSpan.value : 1));
+    const scrubStep = computed(() => (isTimeMode.value ? timeSpan.value / 1000 : 0.002));
+    const scrubValue = computed(() => (isTimeMode.value ? store.state.time : timeFraction.value));
+    const timeLabel = computed(() => (isTimeMode.value
+      ? `t = ${store.state.time.toFixed(1)} cycles`
+      : `${timeFraction.value.toFixed(2)} cycle`));
+    const playTitle = computed(() => {
+      if (isTimeMode.value) return 'Play the sources\' signals as they cross the scene';
+      return isTimeResolved.value
+        ? 'Animate the instantaneous field'
+        : 'The intensity view is time-averaged, so there is nothing to animate';
+    });
+
+    // A time-harmonic field repeats every cycle, so one cycle is the whole of
+    // its motion — and only the views that show an instant have any motion.
+    const canRecordCycle = computed(() => !isTimeMode.value && view.value !== 'intensity');
+    const recording = ref(false);
+    const recordProgress = ref(0);
+    let cancelRequested = false;
+
+    const onExportVideo = async (kind) => {
+      openMenu.value = null;
+      recording.value = true;
+      recordProgress.value = 0;
+      cancelRequested = false;
+      try {
+        await app.exportVideo(kind, {
+          onProgress: (fraction) => { recordProgress.value = fraction; },
+          isCancelled: () => cancelRequested,
+        });
+      } catch (e) {
+        window.alert(e.message);
+      } finally {
+        recording.value = false;
+      }
+    };
 
     return {
       store,
       fileInput,
+      canRecordCycle,
+      recording,
+      recordProgress,
+      onExportVideo,
+      cancelRecording: () => { cancelRequested = true; },
+      onExportImage: () => {
+        openMenu.value = null;
+        app.exportImage().catch((e) => window.alert(e.message));
+      },
+      cycleHint: computed(() => (canRecordCycle.value
+        ? 'One optical cycle of the instantaneous field, looping.'
+        : 'For a time-harmonic scene in the Field or Amp+phase view.')),
+      spanHint: computed(() => (isTimeMode.value
+        ? 'The sources\' signals crossing the scene, start to end.'
+        : 'For a scene with time-dependent sources.')),
       example,
       openMenu,
       linkLabel,
@@ -188,10 +281,14 @@ export default {
       tool: store.tool,
       view,
       isTimeResolved,
+      isTimeMode,
       isAnimating: computed(() => store.state.isAnimating),
       toggleAnimation: store.toggleAnimation,
-      timeFraction,
-      timeLabel: computed(() => `${timeFraction.value.toFixed(2)} cycle`),
+      scrubMax,
+      scrubStep,
+      scrubValue,
+      timeLabel,
+      playTitle,
       onScrubTime: (event) => store.setTime(parseFloat(event.target.value)),
       linkTitle: 'Copy a link to this scene. Settings -> Auto sync URL keeps it up to date as you edit',
       toolGroups: TOOL_GROUPS,
@@ -302,6 +399,13 @@ export default {
   padding-top: 3px;
 }
 
+.wave-time-label {
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
+  white-space: nowrap;
+}
+
 .wave-menu {
   position: relative;
   display: inline-block;
@@ -366,8 +470,16 @@ export default {
   line-height: 1.25;
 }
 
-.wave-menu-list button:hover {
+.wave-menu-list button:hover:not(:disabled) {
   background-color: rgba(255, 255, 255, 0.1);
+}
+
+.wave-menu-list button:disabled {
+  opacity: 0.4;
+}
+
+.wave-export-list {
+  min-width: 260px;
 }
 
 .wave-menu-list button.wave-menu-active {

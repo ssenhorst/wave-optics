@@ -17,6 +17,8 @@
 import BaseSceneObj from '../BaseSceneObj.js';
 import geometry from '../../geometry.js';
 import i18next from 'i18next';
+import { SIGNAL_DEFAULTS } from '../../waveOptics/signals.js';
+import { populateSignalObjBar, signalPropertySchema } from './waveSignalControls.js';
 
 /**
  * A time-harmonic point source for the wave-optics simulator: the 2D analogue
@@ -42,7 +44,8 @@ class WavePointSource extends BaseSceneObj {
     x: null,
     y: null,
     amplitude: 1,
-    phase: 0
+    phase: 0,
+    ...SIGNAL_DEFAULTS
   };
 
   static getDescription(objData, scene, detailed = false) {
@@ -54,6 +57,7 @@ class WavePointSource extends BaseSceneObj {
       { key: '', type: 'point', label: i18next.t('simulator:sceneObjs.LineObjMixin.sourcePoint') },
       { key: 'amplitude', type: 'number', label: i18next.t('simulator:waveSceneObjs.common.amplitude') },
       { key: 'phase', type: 'number', label: i18next.t('simulator:waveSceneObjs.common.phase') + ' (°)' },
+      ...signalPropertySchema(),
     ];
   }
 
@@ -67,6 +71,7 @@ class WavePointSource extends BaseSceneObj {
       i18next.t('simulator:waveSceneObjs.common.phase') + ' (°)', -180, 180, 1, this.phase,
       function (obj, value) { obj.phase = value; }
     );
+    populateSignalObjBar(objBar, this);
   }
 
   draw(canvasRenderer, isAboveLight, isHovered) {

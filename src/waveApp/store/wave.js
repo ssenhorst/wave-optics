@@ -72,6 +72,8 @@ export const useWaveStore = () => {
       gridWidth: 0,
       gridHeight: 0,
       computeMs: 0,
+      isTimeMode: false,
+      timeSpan: 0,
       mousePos: null,
     },
   });
@@ -94,7 +96,10 @@ export const useWaveStore = () => {
    */
   const applyAnimationSetting = () => {
     if (!app.simulator) return;
-    if (state.animated && state.view !== 'intensity') app.simulator.startAnimation();
+    // A time-dependent scene moves in every view, the intensity one included: it
+    // shows the intensity of a pulse at an instant, not a time average.
+    const canMove = state.view !== 'intensity' || state.status.isTimeMode;
+    if (state.animated && canMove) app.simulator.startAnimation();
     else app.simulator.stopAnimation();
   };
 
@@ -184,6 +189,14 @@ export const useWaveStore = () => {
       state.status.gridWidth = detail.gridWidth;
       state.status.gridHeight = detail.gridHeight;
       state.status.computeMs = detail.computeMs;
+    }
+    if (detail.isTimeMode !== undefined) {
+      const changed = detail.isTimeMode !== state.status.isTimeMode;
+      state.status.isTimeMode = detail.isTimeMode;
+      state.status.timeSpan = detail.timeSpan ?? 0;
+      // A scene opened with its animation on only learns that it is
+      // time-dependent once its field has been computed.
+      if (changed) applyAnimationSetting();
     }
     if (detail.warnings !== undefined) state.status.warnings = detail.warnings;
     if (detail.urlWarning !== undefined) state.status.urlWarning = detail.urlWarning;
