@@ -37,7 +37,7 @@ import { resolveSignal, isContinuousWave } from './signals.js';
  * @property {number} y - Transverse position, in scene units.
  * @property {number} re - Real part of the complex weight.
  * @property {number} im - Imaginary part of the complex weight.
- * @property {import('./signals.js').WaveSignal} [signal] - The time dependence;
+ * @property {WaveSignal} [signal] - The time dependence, see `signals.js`;
  *   a continuous wave when absent.
  */
 

@@ -986,7 +986,7 @@ class WaveFieldEngineWebGL2 {
    * instant itself, as {@link farFieldTimeShift} does, since the histories
    * are only advanced to the instants as given.
    *
-   * @param {Array<{x: number, y: number, timeShift?: number}>} points
+   * @param {Array<{x: number, y: number, timeShift: (number|undefined)}>} points
    * @param {number[]} times - In increasing order, in optical cycles.
    * @returns {Float32Array} For each instant, for each point, `(Re, Im)` of `Psi`.
    */
