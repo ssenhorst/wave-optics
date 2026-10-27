@@ -21,6 +21,7 @@ import i18next from 'i18next';
 import { evaluateLatex } from '../../equation.js';
 import { wavelengthInMedium } from '../../waveOptics/conventions.js';
 import { SIGNAL_DEFAULTS } from '../../waveOptics/signals.js';
+import { populateSignalObjBar, signalPropertySchema } from './waveSignalControls.js';
 import {
   equationInfo, amplitudeExamples, phaseExamples
 } from './waveEquationInfo.js';
@@ -85,6 +86,7 @@ class WaveLineSource extends LineObjMixin(BaseSceneObj) {
       { key: 'amplitude', type: 'number', label: i18next.t('simulator:waveSceneObjs.common.amplitude') },
       { key: 'eqnAmplitude', type: 'equation', label: 'A(u)', variables: ['u'], info: help.amplitude },
       { key: 'eqnPhase', type: 'equation', label: 'φ(u)', variables: ['u'], info: help.phase },
+      ...signalPropertySchema(),
     ];
   }
 
@@ -102,6 +104,7 @@ class WaveLineSource extends LineObjMixin(BaseSceneObj) {
     objBar.createEquation('φ(u)', this.eqnPhase, function (obj, value) {
       obj.eqnPhase = value;
     }, help.phase);
+    populateSignalObjBar(objBar, this);
   }
 
   draw(canvasRenderer, isAboveLight, isHovered) {

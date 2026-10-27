@@ -18,6 +18,7 @@ import BaseSceneObj from '../BaseSceneObj.js';
 import geometry from '../../geometry.js';
 import i18next from 'i18next';
 import { SIGNAL_DEFAULTS } from '../../waveOptics/signals.js';
+import { populateSignalObjBar, signalPropertySchema } from './waveSignalControls.js';
 import { drawHandle, drawGuide, isOnHandle } from './waveHandles.js';
 
 /**
@@ -76,6 +77,7 @@ class WavePlaneWave extends BaseSceneObj {
       { key: 'amplitude', type: 'number', label: i18next.t('simulator:waveSceneObjs.common.amplitude') },
       { key: 'angle', type: 'number', label: i18next.t('simulator:waveSceneObjs.common.angle') + ' (°)' },
       { key: 'phase', type: 'number', label: i18next.t('simulator:waveSceneObjs.common.phase') + ' (°)' },
+      ...signalPropertySchema(),
     ];
   }
 
@@ -95,6 +97,7 @@ class WavePlaneWave extends BaseSceneObj {
       function (obj, value) { obj.phase = value; },
       '<p>' + i18next.t('simulator:waveSceneObjs.common.anchorPhaseInfo') + '</p>'
     );
+    populateSignalObjBar(objBar, this);
   }
 
   /**

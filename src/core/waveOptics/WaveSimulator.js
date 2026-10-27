@@ -32,6 +32,15 @@ const REFINE_DELAY_MS = 150;
 const INTERACTION_WINDOW_MS = 200;
 
 /**
+ * How long one pass of a time-dependent scene takes to play, in seconds of wall
+ * time. The time-harmonic animation shows one optical cycle at half a cycle per
+ * second; a pulse crossing a view many wavelengths wide needs to move much
+ * faster than that to be watchable, so playback is paced by the scene's own
+ * time span instead.
+ */
+const TIME_MODE_LOOP_SECONDS = 12;
+
+/**
  * The wave-optics counterpart of {@link Simulator}: it presents the same
  * interface to {@link Editor} (`updateSimulation`, `dpr`, the event emitter)
  * but replaces ray tracing with a summation of point-source fields.
@@ -127,6 +136,13 @@ class WaveSimulator {
      * rather than the time-harmonic one.
      */
     this.isTimeMode = false;
+
+    /**
+     * @property {number} timeSpan - For a time-dependent scene, the optical
+     * cycles from time zero until the last signal has left the view. Playback
+     * runs over this span and starts again.
+     */
+    this.timeSpan = 0;
 
     /** Whether the colour scale still needs reading back for this change. */
     this.needsStats = true;
@@ -345,6 +361,7 @@ class WaveSimulator {
       // field, which every envelope is a modulation of. That keeps the scale
       // steady while a pulse crosses the view instead of rescaling every frame.
       this.isTimeMode = isTimeDependent(model);
+      this.timeSpan = this.isTimeMode ? sceneTimeSpan(model) : 0;
       if (this.isTimeMode) this.engine.computeFieldAtTime(model, this.time);
 
       this.fieldSerial++;
@@ -366,6 +383,8 @@ class WaveSimulator {
       gridHeight: model.grid.height,
       computeMs: this.lastComputeMs,
       referenceAmplitude: this.referenceAmplitude,
+      isTimeMode: this.isTimeMode,
+      timeSpan: this.timeSpan,
     });
   }
 
@@ -568,7 +587,13 @@ class WaveSimulator {
       const now = performance.now();
       const elapsed = (now - this.animationLastTime) / 1000;
       this.animationLastTime = now;
-      this.time += elapsed * this.animationSpeed;
+      if (this.isTimeMode) {
+        // Loop over the scene's span, so a pulse crosses the view and comes back.
+        this.time += elapsed * this.timeSpan / TIME_MODE_LOOP_SECONDS;
+        if (this.time > this.timeSpan) this.time = 0;
+      } else {
+        this.time += elapsed * this.animationSpeed;
+      }
       this.computeFrame();
       this.render();
       this.emit('timeChange', { time: this.time });
@@ -632,6 +657,33 @@ class WaveSimulator {
     this.engine = null;
     this.eventListeners = {};
   }
+}
+
+/**
+ * The time span of a time-dependent model, in optical cycles: from zero until
+ * the latest signal, plus a few durations, has had time to cross the view.
+ *
+ * Noise has no instant of its own, so it contributes only its duration; the
+ * span then just has to be long enough to watch it fluctuate.
+ *
+ * @param {Object} model - As built by `buildWaveModel`.
+ * @returns {number}
+ */
+export function sceneTimeSpan(model) {
+  const { grid, settings, subspaces } = model;
+  let latest = 0;
+  let largestIndex = settings.refractiveIndex;
+  for (const subspace of subspaces) {
+    largestIndex = Math.max(largestIndex, subspace.refractiveIndex);
+    for (const item of [...subspace.primaries, ...(subspace.planeWaves ?? [])]) {
+      const signal = item.signal;
+      if (!signal || signal.type === 'cw') continue;
+      const start = signal.type === 'noise' ? 0 : signal.delay;
+      latest = Math.max(latest, start + 3 * signal.duration);
+    }
+  }
+  const crossing = largestIndex * grid.extent / settings.wavelength;
+  return latest + crossing;
 }
 
 export default WaveSimulator;

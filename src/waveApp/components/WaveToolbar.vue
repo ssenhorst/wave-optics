@@ -90,12 +90,13 @@
       <!-- Animation -->
       <button class="btn btn-sm" :class="isAnimating ? 'btn-primary' : 'btn-outline-light'"
         @click="toggleAnimation" :disabled="!isTimeResolved"
-        :title="isTimeResolved ? 'Animate the instantaneous field' : 'The intensity view is time-averaged, so there is nothing to animate'">
+        :title="playTitle">
         {{ isAnimating ? 'Pause' : 'Play' }}
       </button>
-      <input type="range" class="form-range wave-range" min="0" max="1" step="0.002"
-        :value="timeFraction" @input="onScrubTime" :disabled="!isTimeResolved"
+      <input type="range" class="form-range wave-range" min="0" :max="scrubMax" :step="scrubStep"
+        :value="scrubValue" @input="onScrubTime" :disabled="!isTimeResolved"
         :title="`Time: ${timeLabel}`">
+      <span v-if="isTimeMode" class="wave-time-label">{{ timeLabel }}</span>
     </div>
 
     <input type="file" ref="fileInput" accept=".json" style="display:none" @change="onFileChosen">
@@ -171,11 +172,28 @@ export default {
     onUnmounted(() => document.removeEventListener('click', closeOnOutsideClick));
 
     const view = store.view;
-    // The intensity view is time-averaged; the other two show an instant.
-    const isTimeResolved = computed(() => view.value !== 'intensity');
+    // A time-dependent scene is shown at an instant in every view. Otherwise the
+    // intensity view is time-averaged and only the other two show an instant.
+    const isTimeMode = computed(() => store.state.status.isTimeMode);
+    const isTimeResolved = computed(() => view.value !== 'intensity' || isTimeMode.value);
 
-    // The field view shows one optical cycle; the scrubber spans exactly that.
+    // A time-harmonic field repeats every optical cycle, so the scrubber spans
+    // exactly one. A time-dependent scene spans until its last signal has
+    // crossed the view.
     const timeFraction = computed(() => store.state.time - Math.floor(store.state.time));
+    const timeSpan = computed(() => Math.max(store.state.status.timeSpan, 1));
+    const scrubMax = computed(() => (isTimeMode.value ? timeSpan.value : 1));
+    const scrubStep = computed(() => (isTimeMode.value ? timeSpan.value / 1000 : 0.002));
+    const scrubValue = computed(() => (isTimeMode.value ? store.state.time : timeFraction.value));
+    const timeLabel = computed(() => (isTimeMode.value
+      ? `t = ${store.state.time.toFixed(1)} cycles`
+      : `${timeFraction.value.toFixed(2)} cycle`));
+    const playTitle = computed(() => {
+      if (isTimeMode.value) return 'Play the sources\' signals as they cross the scene';
+      return isTimeResolved.value
+        ? 'Animate the instantaneous field'
+        : 'The intensity view is time-averaged, so there is nothing to animate';
+    });
 
     return {
       store,
@@ -187,10 +205,14 @@ export default {
       tool: store.tool,
       view,
       isTimeResolved,
+      isTimeMode,
       isAnimating: computed(() => store.state.isAnimating),
       toggleAnimation: store.toggleAnimation,
-      timeFraction,
-      timeLabel: computed(() => `${timeFraction.value.toFixed(2)} cycle`),
+      scrubMax,
+      scrubStep,
+      scrubValue,
+      timeLabel,
+      playTitle,
       onScrubTime: (event) => store.setTime(parseFloat(event.target.value)),
       linkTitle: 'Copy a link to this scene. Settings -> Auto sync URL keeps it up to date as you edit',
       toolGroups: TOOL_GROUPS,
@@ -298,6 +320,13 @@ export default {
 .wave-range {
   width: 110px;
   padding-top: 3px;
+}
+
+.wave-time-label {
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
+  white-space: nowrap;
 }
 
 .wave-menu {

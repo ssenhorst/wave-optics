@@ -406,6 +406,8 @@ function bindSimulatorEvents() {
       gridWidth: e.gridWidth,
       gridHeight: e.gridHeight,
       computeMs: e.computeMs,
+      isTimeMode: e.isTimeMode,
+      timeSpan: e.timeSpan,
       error: simulator.getError(),
     });
   });
