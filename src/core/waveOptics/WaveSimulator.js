@@ -16,7 +16,7 @@
 
 import CanvasRenderer from '../CanvasRenderer.js';
 import WaveFieldEngineWebGL2 from './WaveFieldEngineWebGL2.js';
-import { buildWaveModel, resolveWaveSettings } from './waveSceneModel.js';
+import { buildWaveModel, resolveWaveSettings, isTimeDependent } from './waveSceneModel.js';
 import { AdaptiveResolution } from './adaptiveResolution.js';
 
 /**
@@ -121,6 +121,13 @@ class WaveSimulator {
      */
     this.fieldReadback = null;
 
+    /**
+     * @property {boolean} isTimeMode - Whether the last model has sources with
+     * a time dependence, so that the field shown is the one at {@link time}
+     * rather than the time-harmonic one.
+     */
+    this.isTimeMode = false;
+
     /** Whether the colour scale still needs reading back for this change. */
     this.needsStats = true;
     this.animationFrameId = -1;
@@ -194,7 +201,9 @@ class WaveSimulator {
     if (!this.engine) return;
 
     const settings = resolveWaveSettings(this.scene);
-    const isInteracting = this.isInteracting();
+    // A playing time-dependent scene computes every frame, so an edit made
+    // while it plays is held to the interactive budget too.
+    const isInteracting = this.isInteracting() || (this.isTimeMode && this.isAnimating);
 
     if (this.refineTimerId !== -1) {
       clearTimeout(this.refineTimerId);
@@ -275,6 +284,9 @@ class WaveSimulator {
       clearTimeout(this.refineTimerId);
       this.refineTimerId = -1;
     }
+    // A time-dependent scene recomputes every frame while it plays, so it stays
+    // at the resolution that fits a frame; the climb resumes when it stops.
+    if (this.isTimeMode && this.isAnimating) return;
     const next = this.adaptive.nextStep(this.currentResolution, target, this.lastComputeMs);
     if (next === null) return;
 
@@ -329,6 +341,12 @@ class WaveSimulator {
         // even on the passes the colour scale does not.
         this.fieldReadback = this.engine.readField();
       }
+      // The colour scale and the measurements above come from the time-harmonic
+      // field, which every envelope is a modulation of. That keeps the scale
+      // steady while a pulse crosses the view instead of rescaling every frame.
+      this.isTimeMode = isTimeDependent(model);
+      if (this.isTimeMode) this.engine.computeFieldAtTime(model, this.time);
+
       this.fieldSerial++;
       this.error = null;
     } catch (e) {
@@ -524,14 +542,26 @@ class WaveSimulator {
   /**
    * Start animating the instantaneous-field view.
    *
-   * Only {@link WaveSimulator#render} runs per frame: the complex field is
-   * time-independent and stays cached in its texture, so the frame rate does
-   * not depend on how many sources there are.
+   * For a time-harmonic scene only {@link WaveSimulator#render} runs per
+   * frame: the complex field is time-independent and stays cached in its
+   * texture, so the frame rate does not depend on how many sources there are.
+   * A scene with time-dependent sources computes the field at each frame's
+   * instant, which costs about as much as one time-harmonic computation.
    */
   startAnimation() {
     if (this.isAnimating || typeof requestAnimationFrame === 'undefined') return;
     this.isAnimating = true;
     this.animationLastTime = performance.now();
+
+    if (this.isTimeMode) {
+      // Every frame is a full field pass, so drop to the resolution that fits
+      // the interactive budget rather than keep the settled one.
+      const target = resolveWaveSettings(this.scene).targetResolution;
+      this.computeField(
+        (sourceCount) => this.adaptive.chooseInitial(sourceCount, target, true), true
+      );
+      this.scheduleRefine(target);
+    }
 
     const step = () => {
       if (!this.isAnimating) return;
@@ -539,6 +569,7 @@ class WaveSimulator {
       const elapsed = (now - this.animationLastTime) / 1000;
       this.animationLastTime = now;
       this.time += elapsed * this.animationSpeed;
+      this.computeFrame();
       this.render();
       this.emit('timeChange', { time: this.time });
       this.animationFrameId = requestAnimationFrame(step);
@@ -555,7 +586,23 @@ class WaveSimulator {
       cancelAnimationFrame(this.animationFrameId);
       this.animationFrameId = -1;
     }
+    // Paused on a frame, the field can afford the settled resolution again.
+    if (this.isTimeMode) this.scheduleFieldUpdate();
     this.emit('animationChange', { isAnimating: false });
+  }
+
+  /**
+   * Bring the field texture to the current time, for a time-dependent scene.
+   * A time-harmonic field needs nothing: its texture holds it for all time.
+   * @private
+   */
+  computeFrame() {
+    if (!this.isTimeMode || !this.engine || !this.lastModel) return;
+    try {
+      this.engine.computeFieldAtTime(this.lastModel, this.time);
+    } catch (e) {
+      this.error = e.message;
+    }
   }
 
   /**
@@ -564,6 +611,7 @@ class WaveSimulator {
    */
   setTime(time) {
     this.time = time;
+    this.computeFrame();
     this.render();
     this.emit('timeChange', { time: this.time });
   }

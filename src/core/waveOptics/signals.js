@@ -191,6 +191,86 @@ export function signalEnvelope(signal, t) {
   }
 }
 
+/**
+ * The code each signal type is stored under in the GPU's signal tables, which
+ * hold `(code, delay, duration, seed)` per source.
+ */
+export const SIGNAL_TYPE_CODES = { cw: 0, pulse: 1, switchOn: 2, noise: 3 };
+
+/**
+ * The four floats a signal is uploaded as.
+ * @param {WaveSignal|undefined} signal
+ * @returns {number[]}
+ */
+export function signalRecord(signal) {
+  if (isContinuousWave(signal)) return [SIGNAL_TYPE_CODES.cw, 0, 1, 0];
+  return [SIGNAL_TYPE_CODES[signal.type], signal.delay, signal.duration, signal.seed];
+}
+
+/**
+ * GLSL for {@link signalEnvelope}, generated from the same constants so the
+ * shader and the reference implementation cannot drift apart. Defines
+ * `vec2 signalEnvelope(vec4 record, float t)`, taking a record as written by
+ * {@link signalRecord}.
+ *
+ * GLSL ES 3.00 converts between `int` and `uint` preserving the bit pattern,
+ * which is what `>>> 0` does in {@link hash32}, so negative knots hash the same
+ * way on both sides.
+ *
+ * @returns {string}
+ */
+export function buildSignalGlsl() {
+  const float = (value) => {
+    const text = String(value);
+    return /[.e]/.test(text) ? text : `${text}.0`;
+  };
+  return `
+uint hash32(uint x) {
+  x ^= x >> 16u;
+  x *= 0x7feb352du;
+  x ^= x >> 15u;
+  x *= 0x846ca68bu;
+  x ^= x >> 16u;
+  return x;
+}
+
+float knotRandom(uint seed, int knot) {
+  return float(hash32(hash32(seed) ^ uint(knot))) / 4294967296.0;
+}
+
+float noisePhase(float t, float duration, uint seed) {
+  const float TWO_PI = 6.283185307179586;
+  float position = t / duration;
+  float knotFloor = floor(position);
+  int knot = int(knotFloor);
+  float fraction = position - knotFloor;
+  float startAngle = knotRandom(seed, knot) * TWO_PI;
+  float endAngle = knotRandom(seed, knot + 1) * TWO_PI;
+  float stepAngle = endAngle - startAngle;
+  stepAngle -= TWO_PI * floor(stepAngle / TWO_PI + 0.5);
+  float smoothed = fraction * fraction * (3.0 - 2.0 * fraction);
+  return startAngle + stepAngle * smoothed;
+}
+
+vec2 signalEnvelope(vec4 record, float t) {
+  int code = int(record.x + 0.5);
+  if (code == ${SIGNAL_TYPE_CODES.cw}) return vec2(1.0, 0.0);
+  float s = t - record.y;
+  float duration = record.z;
+  if (code == ${SIGNAL_TYPE_CODES.pulse}) {
+    return vec2(exp(-${float(GAUSSIAN_FWHM)} * s * s / (duration * duration)), 0.0);
+  }
+  if (code == ${SIGNAL_TYPE_CODES.switchOn}) {
+    // Clamped so the exponential cannot overflow long before the switch-on.
+    float exponent = min(-${float(LOGISTIC_10_90)} * s / duration, 80.0);
+    return vec2(1.0 / (1.0 + exp(exponent)), 0.0);
+  }
+  float phase = noisePhase(s, duration, uint(record.w));
+  return vec2(cos(phase), sin(phase));
+}
+`;
+}
+
 export default {
   SIGNAL_TYPES,
   SIGNAL_DEFAULTS,
