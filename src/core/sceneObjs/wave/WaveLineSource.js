@@ -20,6 +20,7 @@ import geometry from '../../geometry.js';
 import i18next from 'i18next';
 import { evaluateLatex } from '../../equation.js';
 import { wavelengthInMedium } from '../../waveOptics/conventions.js';
+import { SIGNAL_DEFAULTS } from '../../waveOptics/signals.js';
 import {
   equationInfo, amplitudeExamples, phaseExamples
 } from './waveEquationInfo.js';
@@ -56,7 +57,8 @@ class WaveLineSource extends LineObjMixin(BaseSceneObj) {
     p2: null,
     amplitude: 1,
     eqnAmplitude: '1',
-    eqnPhase: '0'
+    eqnPhase: '0',
+    ...SIGNAL_DEFAULTS
   };
 
   static getDescription(objData, scene, detailed = false) {

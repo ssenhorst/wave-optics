@@ -17,6 +17,7 @@
 import BaseSceneObj from '../BaseSceneObj.js';
 import geometry from '../../geometry.js';
 import i18next from 'i18next';
+import { SIGNAL_DEFAULTS } from '../../waveOptics/signals.js';
 
 /**
  * A time-harmonic point source for the wave-optics simulator: the 2D analogue
@@ -42,7 +43,8 @@ class WavePointSource extends BaseSceneObj {
     x: null,
     y: null,
     amplitude: 1,
-    phase: 0
+    phase: 0,
+    ...SIGNAL_DEFAULTS
   };
 
   static getDescription(objData, scene, detailed = false) {

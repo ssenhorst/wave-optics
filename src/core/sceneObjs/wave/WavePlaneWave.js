@@ -17,6 +17,7 @@
 import BaseSceneObj from '../BaseSceneObj.js';
 import geometry from '../../geometry.js';
 import i18next from 'i18next';
+import { SIGNAL_DEFAULTS } from '../../waveOptics/signals.js';
 import { drawHandle, drawGuide, isOnHandle } from './waveHandles.js';
 
 /**
@@ -61,7 +62,8 @@ class WavePlaneWave extends BaseSceneObj {
     y: null,
     amplitude: 1,
     phase: 0,
-    angle: 0
+    angle: 0,
+    ...SIGNAL_DEFAULTS
   };
 
   static getDescription(objData, scene, detailed = false) {

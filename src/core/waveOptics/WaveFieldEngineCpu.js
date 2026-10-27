@@ -28,6 +28,7 @@
 import { greensFunction, rayleighSommerfeldKernel } from './hankel.js';
 import { wavenumber, minimumRadius } from './conventions.js';
 import { gridSamplePosition, subspaceIndexAt } from './waveSceneModel.js';
+import { signalEnvelope } from './signals.js';
 
 /**
  * Evaluate the field at a list of points.
@@ -219,6 +220,106 @@ export function computeModelFieldAt(model, points) {
 }
 
 /**
+ * Evaluate the time-dependent field of a model at arbitrary points and one
+ * instant, as the complex envelope-weighted phasor `Psi(r, t)` described in
+ * `signals.js`. The real field is `Re{ Psi e^{-i 2 pi t} }`, which
+ * {@link instantaneousField} gives with a phase of `2 pi t`.
+ *
+ * Each contribution is the monochromatic one — the same Green's function,
+ * Rayleigh-Sommerfeld kernel and plane-wave phase as {@link computeFieldAt} —
+ * multiplied by its source's envelope at the retarded time. A site on an
+ * interface re-radiates the field that arrived at it, so its envelope is the
+ * previous subspace's field at the site, evaluated earlier by the time the
+ * light takes from the site to the observer.
+ *
+ * This is the reference implementation and evaluates that recursion directly,
+ * with no history buffers and so no interpolation. The cost is the product of
+ * the site counts of every interface on the way, which is fine for the few
+ * points and interfaces a test uses and nothing more. With continuous-wave
+ * sources it reproduces {@link computeModelFieldAt} exactly, at any time.
+ *
+ * @param {Object} model - As built by `buildWaveModel`.
+ * @param {Array<{x: number, y: number}>} points
+ * @param {number} time - In vacuum optical cycles.
+ * @returns {Float64Array} Interleaved real and imaginary parts of `Psi`.
+ */
+export function computeModelFieldAtTime(model, points, time) {
+  const { subspaces, interfaces, settings } = model;
+  const wavelength = settings.wavelength;
+  const axisSign = settings?.axisSign ?? 1;
+
+  // Per subspace: wavenumber, clamp radius and retardation per unit length.
+  const media = subspaces.map((subspace) => ({
+    k: wavenumber(wavelength, subspace.refractiveIndex),
+    rMin: minimumRadius(wavelength, subspace.refractiveIndex),
+    delayPerLength: subspace.refractiveIndex / wavelength,
+  }));
+
+  const evaluate = (j, x, y, t) => {
+    const subspace = subspaces[j];
+    const { k, rMin, delayPerLength } = media[j];
+    let re = 0;
+    let im = 0;
+
+    const accumulate = (kernel, weightRe, weightIm, envelope) => {
+      // kernel * weight * envelope, all complex.
+      const kwRe = kernel.re * weightRe - kernel.im * weightIm;
+      const kwIm = kernel.re * weightIm + kernel.im * weightRe;
+      re += kwRe * envelope.re - kwIm * envelope.im;
+      im += kwRe * envelope.im + kwIm * envelope.re;
+    };
+
+    if (j > 0) {
+      for (const site of subspace.surfaceSamples) {
+        const dx = x - site.x;
+        const dy = y - site.y;
+        const distance = Math.hypot(dx, dy);
+        const r = Math.max(distance, rMin);
+        const incident = evaluate(j - 1, site.x, site.y, t - delayPerLength * distance);
+        // transmission * incident field * arc length, as in propagateChain.
+        accumulate(
+          rayleighSommerfeldKernel(k * r, (site.nx * dx + site.ny * dy) / r, k),
+          (site.tRe * incident.re - site.tIm * incident.im) * site.ds,
+          (site.tRe * incident.im + site.tIm * incident.re) * site.ds,
+          { re: 1, im: 0 }
+        );
+      }
+    }
+
+    for (const source of subspace.primaries) {
+      const distance = Math.hypot(x - source.x, y - source.y);
+      const r = Math.max(distance, rMin);
+      accumulate(
+        greensFunction(k * r), source.re, source.im,
+        signalEnvelope(source.signal, t - delayPerLength * distance)
+      );
+    }
+
+    for (const wave of subspace.planeWaves ?? []) {
+      // Distance travelled past the anchor, which may be negative: the anchor
+      // is where the wave has the delay its signal states.
+      const travelled = wave.dirX * (x - wave.x) + wave.dirY * (y - wave.y);
+      const phase = k * travelled;
+      accumulate(
+        { re: Math.cos(phase), im: Math.sin(phase) }, wave.re, wave.im,
+        signalEnvelope(wave.signal, t - delayPerLength * travelled)
+      );
+    }
+
+    return { re, im };
+  };
+
+  const out = new Float64Array(points.length * 2);
+  points.forEach((point, index) => {
+    const j = subspaceIndexAt(interfaces, point.x, point.y, axisSign);
+    const value = evaluate(j, point.x, point.y, time);
+    out[index * 2] = value.re;
+    out[index * 2 + 1] = value.im;
+  });
+  return out;
+}
+
+/**
  * The amplitude `|U|` at each sample of an interleaved complex field.
  * @param {Float64Array|Float32Array} field
  * @returns {Float64Array}
@@ -252,6 +353,7 @@ export default {
   computeFieldGrid,
   propagateChain,
   computeModelFieldAt,
+  computeModelFieldAtTime,
   fieldAmplitudes,
   instantaneousField,
 };

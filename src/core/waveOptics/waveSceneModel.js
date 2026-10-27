@@ -29,6 +29,7 @@ import {
 } from './conventions.js';
 import { DEFAULT_PHASE_CHROMA } from './oklch.js';
 import { RESOLUTION_LADDER } from './adaptiveResolution.js';
+import { resolveSignal, isContinuousWave } from './signals.js';
 
 /**
  * @typedef {Object} WaveSource
@@ -36,6 +37,8 @@ import { RESOLUTION_LADDER } from './adaptiveResolution.js';
  * @property {number} y - Transverse position, in scene units.
  * @property {number} re - Real part of the complex weight.
  * @property {number} im - Imaginary part of the complex weight.
+ * @property {import('./signals.js').WaveSignal} [signal] - The time dependence;
+ *   a continuous wave when absent.
  */
 
 /**
@@ -259,13 +262,17 @@ export function buildSubspaceStack(scene, settings, samplesPerWavelength) {
     }
   }
 
-  // Place each source in the subspace it sits in.
+  // Place each source in the subspace it sits in. Every sample of an object
+  // shares that object's signal, which the monochromatic engines ignore and the
+  // time-domain evaluation reads.
   for (const obj of scene.objs ?? []) {
+    const signal = resolveSignal(obj);
     if (typeof obj?.getWaveSources === 'function') {
       const contributed = obj.getWaveSources({ scene, settings, samplesPerWavelength });
       for (const source of contributed ?? []) {
         if (!Number.isFinite(source.x) || !Number.isFinite(source.y) ||
           !Number.isFinite(source.re) || !Number.isFinite(source.im)) continue;
+        source.signal ??= signal;
         subspaces[subspaceIndexAt(interfaces, source.x, source.y, axisSign)].primaries.push(source);
       }
     }
@@ -277,12 +284,26 @@ export function buildSubspaceStack(scene, settings, samplesPerWavelength) {
       for (const wave of waves ?? []) {
         if (!Number.isFinite(wave.x) || !Number.isFinite(wave.y) ||
           !Number.isFinite(wave.re) || !Number.isFinite(wave.im)) continue;
+        wave.signal ??= signal;
         subspaces[subspaceIndexAt(interfaces, wave.x, wave.y, axisSign)].planeWaves.push(wave);
       }
     }
   }
 
   return { subspaces, interfaces, warnings: [...new Set(warnings)] };
+}
+
+/**
+ * Whether any source in a model has a time dependence beyond the continuous
+ * wave, which is what decides whether the scene needs the time-domain engine.
+ *
+ * @param {Object} model - As built by `buildWaveModel`.
+ * @returns {boolean}
+ */
+export function isTimeDependent(model) {
+  return (model?.subspaces ?? []).some((subspace) =>
+    subspace.primaries.some((source) => !isContinuousWave(source.signal)) ||
+    subspace.planeWaves.some((wave) => !isContinuousWave(wave.signal)));
 }
 
 /**
