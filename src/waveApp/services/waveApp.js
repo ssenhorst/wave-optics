@@ -37,7 +37,7 @@ import { buildExampleScene, EXAMPLE_SCENES } from '../exampleScenes.js';
 import { resolveUiOptions } from '../../core/uiOptions.js';
 
 /** Scene object types the wave app offers as tools. */
-export const WAVE_TOOL_TYPES = ['WavePointSource', 'WaveRuler'];
+export const WAVE_TOOL_TYPES = ['WavePointSource', 'WaveRuler', 'WavePointMeasurement'];
 
 let scene = null;
 let simulator = null;

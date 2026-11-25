@@ -225,6 +225,17 @@ const TOOL_SCENES = {
       { type: 'WaveFocusProbe', x: 330, y: 190, units: 'wavelengths' },
     ],
   },
+  WavePointMeasurement: {
+    view: 'intensity',
+    upperCutoff: 1.6,
+    objs: [
+      planeWave(40, 320),
+      element('WaveMultiSlit', 200, 260, {
+        slitCount: 2, slitWidth: TOOL_WAVELENGTH, slitSpacing: 5 * TOOL_WAVELENGTH,
+      }),
+      { type: 'WavePointMeasurement', x: 410, y: 245 },
+    ],
+  },
 };
 
 /**

@@ -338,6 +338,10 @@
     "WaveFocusProbe": {
       "title": "Focus probe",
       "description": "Finds the brightest point of the subspace it is dropped into, and the full width at half maximum of the intensity across it."
+    },
+    "WavePointMeasurement": {
+      "title": "Point measurement",
+      "description": "Reads the field amplitude, intensity, and phase at one point. In far-field mode, measures along the outgoing direction from the last interface."
     }
   },
   "waveHomePage": {

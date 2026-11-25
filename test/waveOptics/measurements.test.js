@@ -22,6 +22,7 @@ import WavePointSource from '../../src/core/sceneObjs/wave/WavePointSource.js';
 import WaveMultiSlit from '../../src/core/sceneObjs/wave/WaveMultiSlit.js';
 import WaveInterface from '../../src/core/sceneObjs/wave/WaveInterface.js';
 import WaveRuler from '../../src/core/sceneObjs/wave/WaveRuler.js';
+import WavePointMeasurement from '../../src/core/sceneObjs/wave/WavePointMeasurement.js';
 import { buildWaveModel } from '../../src/core/waveOptics/waveSceneModel.js';
 import { computeFieldGrid } from '../../src/core/waveOptics/waveSceneModel.js';
 import { computeModelFieldAt } from '../../src/core/waveOptics/WaveFieldEngineCpu.js';
@@ -78,6 +79,48 @@ function addPlaneWave(scene, x, y) {
   scene.objs.push(wave);
   return wave;
 }
+
+describe('point measurement', () => {
+  test('measures amplitude, intensity, and phase at the chosen point', () => {
+    const scene = makeScene();
+    addPlaneWave(scene, 100, 400);
+    const measurement = new WavePointMeasurement(scene, { x: 500, y: 400 });
+    attachSimulator(scene);
+
+    const result = measurement.measure();
+    expect(result.amplitude).toBeGreaterThan(0);
+    expect(result.intensity).toBeCloseTo(result.amplitude ** 2, 10);
+    expect(result.phase).toBeGreaterThanOrEqual(-180);
+    expect(result.phase).toBeLessThanOrEqual(180);
+    expect(measurement.samplingPoint()).toEqual({ point: { x: 500, y: 400 }, origin: null });
+  }, 15000);
+
+  test('farfield mode samples along the outgoing direction', () => {
+    const scene = makeScene();
+    const slit = new WaveMultiSlit(scene);
+    addPlaneWave(scene, 100, 400);
+    slit.p1 = { x: 300, y: 100 };
+    slit.p2 = { x: 300, y: 700 };
+    Object.assign(slit, { slitCount: 2, slitWidth: 20, slitSpacing: 120 });
+    scene.objs.push(slit);
+    const measurement = new WavePointMeasurement(scene, {
+      x: 900, y: 500, farField: true,
+    });
+
+    const sample = measurement.samplingPoint();
+    const direction = {
+      x: sample.point.x - sample.origin.x,
+      y: sample.point.y - sample.origin.y,
+    };
+    const length = Math.hypot(direction.x, direction.y);
+    const expected = Math.atan2(100, 600);
+    expect(sample.origin).toMatchObject({ x: 300, y: 400 });
+    expect(direction.y / direction.x).toBeCloseTo(Math.tan(expected), 10);
+    expect(length).toBeGreaterThan(100000);
+    attachSimulator(scene);
+    expect(measurement.measure()?.amplitude).toBeGreaterThan(0);
+  });
+});
 
 describe('wave ruler', () => {
   test('exposes and saves the wavelength-units toggle', () => {

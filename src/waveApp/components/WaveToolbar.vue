@@ -149,6 +149,7 @@ const TOOL_GROUPS = [
     label: 'Measure',
     items: [
       { type: 'WaveRuler', label: 'Ruler', hint: 'Drag to measure distance along a marked scale' },
+      { type: 'WavePointMeasurement', label: 'Point measurement', hint: 'Click to read amplitude, intensity, and phase at a point; enable far field to measure along its outgoing direction' },
       { type: 'WaveScreen', label: 'Screen', hint: 'Drag to set the screen endpoints, then place the far-field vertex' },
       { type: 'WaveFocusProbe', label: 'Focus probe', hint: 'Click to find the brightest point of that subspace' },
     ],
