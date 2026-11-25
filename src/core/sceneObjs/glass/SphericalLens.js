@@ -41,6 +41,13 @@ import { drawOpticalAxis, drawFocalPoints } from '../opticalAxisDecoration.js';
  * @property {number} refIndex - The refractive index of the glass, or the Cauchy coefficient A of the glass if "Simulate Colors" is on.
  * @property {number} cauchyB - The Cauchy coefficient B of the glass if "Simulate Colors" is on, in micrometer squared.
  */
+/**
+ * What a lens's power is multiplied by to report it, chosen so that an ordinary lens in a scene
+ * drawn at this size reads as a small number. On a scene in millimetres it is the dioptre.
+ * @const {number}
+ */
+const POWER_SCALE = 1000;
+
 class SphericalLens extends Glass {
   static type = 'SphericalLens';
   static isOptical = true;
@@ -62,7 +69,75 @@ class SphericalLens extends Glass {
     return i18next.t('main:tools.SphericalLens.title');
   }
 
+  /**
+   * The focal length, as a property that can be set.
+   *
+   * A lens held as a shape has no focal length stored anywhere — it is a consequence of the radii —
+   * but an exercise about how strongly each element focuses needs it as a single number the student
+   * can turn. Reading it recomputes it from the shape; writing it rebuilds the lens at the same
+   * thickness and the same bending, so that turning this one number changes only what it names.
+   * @type {number}
+   */
+  get focalLength() {
+    return this.getDFX().f;
+  }
+
+  set focalLength(value) {
+    const current = this.getDFX();
+    this.createLensWithDFX(current.d, value, current.x);
+  }
+
+  /**
+   * How strongly the lens focuses, as its power rather than its focal length.
+   *
+   * Focal length is the wrong number to put in front of a beginner. It runs the wrong way — a
+   * stronger lens has a *smaller* focal length — and two lenses in contact do not add up in it,
+   * where their powers simply do. An exercise about sharing the focusing between several lenses is
+   * unreadable in focal lengths and obvious in powers, so this is what the sliders show.
+   *
+   * It is scaled by a thousand, so that a lens of a few hundred units of focal length reads as a
+   * small number of units of power rather than as 0.0034. On a scene drawn in millimetres that
+   * scaling makes it the dioptre.
+   * @type {number}
+   */
+  get power() {
+    const f = this.getDFX().f;
+    return isFinite(f) && f !== 0 ? POWER_SCALE / f : 0;
+  }
+
+  set power(value) {
+    const current = this.getDFX();
+    // A lens of no power is a flat plate, which has no focal length to be given. A very long one
+    // stands in for it: the slider then runs smoothly through zero instead of breaking there.
+    const focalLength = Math.abs(value) < 1e-6 ? 1e7 : POWER_SCALE / value;
+    this.createLensWithDFX(current.d, focalLength, current.x);
+  }
+
+  /**
+   * How the lens is bent at a fixed focal length; see {@link createLensWithDFX}.
+   * @type {number}
+   */
+  get shapeFactor() {
+    return this.getDFX().x;
+  }
+
+  set shapeFactor(value) {
+    const current = this.getDFX();
+    this.createLensWithDFX(current.d, current.f, value);
+  }
+
   static getPropertySchema(objData, scene) {
+    if (objData.defBy === 'DFX') {
+      // Given by its power and its bending, the lens is edited as those two numbers rather than as
+      // six points on a path the student never thinks in.
+      return [
+        { key: 'power', type: 'number', label: i18next.t('simulator:sceneObjs.SphericalLens.power') },
+        { key: 'shapeFactor', type: 'number', label: i18next.t('simulator:sceneObjs.SphericalLens.shapeFactor') },
+        ...BaseGlass.getPropertySchema(objData, scene),
+        { key: 'showOpticalAxis', type: 'boolean', label: i18next.t('simulator:sceneObjs.common.showOpticalAxis') },
+        { key: 'showFocalPoints', type: 'boolean', label: i18next.t('simulator:sceneObjs.common.showFocalPoints') },
+      ];
+    }
     return [
       { key: 'path.0', type: 'point', label: i18next.t('simulator:sceneObjs.common.pointN', { i: 1 }) },
       { key: 'path.1', type: 'point', label: i18next.t('simulator:sceneObjs.common.pointN', { i: 2 }) },
@@ -87,6 +162,8 @@ class SphericalLens extends Glass {
         this.createLensWithDFfdBfd(this.params.d, this.params.ffd, this.params.bfd);
       } else if (this.defBy == 'DF') {
         this.createLensWithDF(this.params.d, this.params.f);
+      } else if (this.defBy == 'DFX') {
+        this.createLensWithDFX(this.params.d, this.params.f, this.params.x);
       }
     }
   }
@@ -96,7 +173,8 @@ class SphericalLens extends Glass {
     objBar.createDropdown('', this.defBy, {
       'DR1R2': i18next.t('simulator:sceneObjs.SphericalLens.defBy.radiiOfCurvature'),
       'DFfdBfd': i18next.t('simulator:sceneObjs.SphericalLens.defBy.focalDistances'),
-      'DF': i18next.t('simulator:sceneObjs.SphericalLens.defBy.focalLength')
+      'DF': i18next.t('simulator:sceneObjs.SphericalLens.defBy.focalLength'),
+      'DFX': i18next.t('simulator:sceneObjs.SphericalLens.defBy.focalLengthAndShape')
     }, function (obj, value) {
       obj.defBy = value;
     }, null, true);
@@ -133,6 +211,20 @@ class SphericalLens extends Glass {
       }, i18next.t('simulator:sceneObjs.common.lengthUnitInfo'), true);
       objBar.createNumber('d', 0, 100, 1, params.d, function (obj, value) {
         obj.createLensWithDF(value, obj.getDF().f);
+      }, null, true);
+    } else if (this.defBy == 'DFX') {
+      var params = this.getDFX();
+
+      objBar.createNumber(i18next.t('simulator:sceneObjs.SphericalLens.power'), -20, 20, 0.05, this.power, function (obj, value) {
+        obj.power = value;
+      }, i18next.t('simulator:sceneObjs.SphericalLens.powerInfo'), true);
+      objBar.createNumber(i18next.t('simulator:sceneObjs.SphericalLens.shapeFactor'), -3, 3, 0.05, params.x, function (obj, value) {
+        const current = obj.getDFX();
+        obj.createLensWithDFX(current.d, current.f, value);
+      }, i18next.t('simulator:sceneObjs.SphericalLens.shapeFactorInfo'), true);
+      objBar.createNumber('d', 0, 100, 1, params.d, function (obj, value) {
+        const current = obj.getDFX();
+        obj.createLensWithDFX(value, current.f, current.x);
       }, null, true);
     } else if (this.defBy == 'DFfdBfd') {
       objBar.createInfoBox('<img src="../img/FFD_BFD.svg" width=100%>');
@@ -658,6 +750,122 @@ class SphericalLens extends Glass {
    * @param {number} d - The centre thickness.
    * @param {number} f - The effective focal length. Negative for a diverging lens.
    */
+  /**
+   * Build the lens from its focusing power and its shape, holding the two apart.
+   *
+   * A lens of a given focal length can be ground to many shapes — equiconvex, plano-convex either
+   * way round, or a meniscus — and which one it is changes its aberration completely while leaving
+   * its focal length untouched. The two radii do not separate those two facts: moving either of them
+   * changes both at once, which makes a lens impossible to reason about by turning one number at a
+   * time. The *shape factor* `x = (r2 + r1) / (r2 - r1)` is the standard way to hold them apart. It
+   * is 0 for an equiconvex lens, +1 and -1 for the two plano-convex orientations, and beyond those
+   * the lens becomes a meniscus.
+   *
+   * In terms of the curvatures a = 1/r1 and b = 1/r2 the shape factor is simply `(a + b) / (a - b)`,
+   * so writing `s = a - b` gives `a = s(x + 1)/2` and `b = s(x - 1)/2`, and the thick-lens maker's
+   * equation becomes a quadratic in `s` that this solves exactly.
+   * @param {number} d - The centre thickness.
+   * @param {number} f - The effective focal length.
+   * @param {number} x - The shape factor.
+   */
+  createLensWithDFX(d, f, x) {
+    this.error = null;
+    this.defBy = 'DFX';
+
+    const n = this.getRefIndexAt(null, { wavelength: 546 });
+    const power = (isFinite(f) && f !== 0) ? 1 / f : NaN;
+
+    let s = NaN;
+    if (isFinite(power)) {
+      const quadratic = (n - 1) * (n - 1) * d * (x * x - 1) / (4 * n);
+      const linear = n - 1;
+      if (Math.abs(quadratic) < 1e-14) {
+        s = power / linear;
+      } else {
+        const discriminant = linear * linear + 4 * quadratic * power;
+        if (discriminant >= 0) {
+          // The root that tends to the thin-lens answer as the thickness goes to zero.
+          const root = (-linear + Math.sqrt(discriminant)) / (2 * quadratic);
+          const other = (-linear - Math.sqrt(discriminant)) / (2 * quadratic);
+          const thin = power / linear;
+          s = Math.abs(root - thin) <= Math.abs(other - thin) ? root : other;
+        }
+      }
+    }
+
+    if (!isFinite(s) || s === 0) {
+      this.storeUnbuiltParams({ d: d, f: f, x: x });
+      return;
+    }
+
+    const a = s * (x + 1) / 2;
+    const b = s * (x - 1) / 2;
+    const r1 = Math.abs(a) < 1e-14 ? Infinity : 1 / a;
+    const r2 = Math.abs(b) < 1e-14 ? Infinity : 1 / b;
+
+    this.createLensWithDR1R2(d, r1, r2);
+    if (!this.path) {
+      this.storeUnbuiltParams({ d: d, f: f, x: x });
+      return;
+    }
+    this.defBy = 'DFX';
+    this.warning = this.describeThicknessWarning(d, r1, r2);
+  }
+
+  /**
+   * The thickness, focal length and shape factor of the lens as it stands.
+   * @returns {{d: number, f: number, x: number}} The parameters.
+   */
+  getDFX() {
+    if (this.params && 'x' in this.params) return this.params;
+
+    const { d, r1, r2 } = this.getDR1R2();
+    const a = isFinite(r1) ? 1 / r1 : 0;
+    const b = isFinite(r2) ? 1 / r2 : 0;
+    const difference = a - b;
+    return {
+      d,
+      f: this.getFocalLength(),
+      x: Math.abs(difference) < 1e-14 ? 0 : (a + b) / difference,
+    };
+  }
+
+  /**
+   * Keep a set of parameters that could not be built, so that the user can edit their way back out
+   * of an impossible lens rather than losing what they typed.
+   * @param {Object} params - The parameters.
+   */
+  storeUnbuiltParams(params) {
+    if (this.path) {
+      this.p1 = geometry.midpoint(this.path[0], this.path[1]);
+      this.p2 = geometry.midpoint(this.path[3], this.path[4]);
+      this.path = null;
+    }
+    this.params = params;
+    this.error = i18next.t('simulator:sceneObjs.SphericalLens.invalidParameters');
+  }
+
+  /**
+   * Whether the two surfaces would meet before the rim, which builds a shape whose edges cross over.
+   * @param {number} d - The centre thickness.
+   * @param {number} r1 - The first radius.
+   * @param {number} r2 - The second radius.
+   * @returns {string|null} The warning, or null if the lens is buildable.
+   */
+  describeThicknessWarning(d, r1, r2) {
+    if (!this.path) return null;
+    const p1 = geometry.midpoint(this.path[0], this.path[1]);
+    const p2 = geometry.midpoint(this.path[3], this.path[4]);
+    const halfAperture = Math.hypot(p1.x - p2.x, p1.y - p2.y) / 2;
+    const sagitta = (r) => (isFinite(r)
+      ? Math.abs(r) - Math.sqrt(Math.max(0, r * r - halfAperture * halfAperture))
+      : 0);
+    const needed = Math.max(0, sagitta(r1)) + Math.max(0, sagitta(r2));
+    return d < needed
+      ? i18next.t('simulator:sceneObjs.SphericalLens.thicknessTooSmall')
+      : null;
+  }
+
   createLensWithDF(d, f) {
     this.error = null;
     this.defBy = 'DF';

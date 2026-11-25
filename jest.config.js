@@ -26,6 +26,7 @@ module.exports = {
     "**/test/goals/**/*.test.js",
     "**/test/sceneObjs/**/*.test.js",
     "**/test/scenes/**/*.test.js",
-    "**/test/waveOptics/**/*.test.js"
+    "**/test/waveOptics/**/*.test.js",
+    "**/test/imaging/**/*.test.js"
   ]
 };

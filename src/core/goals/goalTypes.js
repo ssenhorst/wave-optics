@@ -52,6 +52,9 @@
  * crossing point), each `{ type, ... }` in scene coordinates.
  */
 
+import { imageQuality } from '../imaging/screenRenderer.js';
+import { totalLensPower } from '../imaging/prescription.js';
+
 const EPS = 1e-12;
 
 /**
@@ -497,6 +500,133 @@ const objectProperty = {
   },
 };
 
+
+/**
+ * Require the picture on an imaging screen to be sharp.
+ *
+ * The measure is the root-mean-square radius of the spot a point of the object is smeared into,
+ * averaged over the field, which is the standard way an optical designer reports how good a system
+ * is. It is reported as a bar rather than a score: the exercise is about understanding why splitting
+ * the power helps, and a number out of a hundred invites a search for the number instead.
+ */
+const imageSharpness = {
+  validate(goal) {
+    if (!goal.screen) return "goal of type 'imageSharpness' requires 'screen' (the name of an ImageScreen)";
+    if (typeof goal.max !== 'number') return "goal of type 'imageSharpness' requires a numeric 'max' (the blur that counts as sharp enough)";
+    if (goal.reference !== undefined && typeof goal.reference !== 'number') {
+      return "goal of type 'imageSharpness': 'reference' must be a number";
+    }
+    return null;
+  },
+
+  getTargets(goal) {
+    return [];
+  },
+
+  evaluate(goal, context) {
+    const screen = findObjByName(context, goal.screen);
+    if (!screen) {
+      return { satisfied: false, progress: 0, detail: `no object named "${goal.screen}"` };
+    }
+    const diagnostics = screen.diagnostics;
+    if (!diagnostics || typeof diagnostics.rms !== 'number') {
+      return { satisfied: false, progress: 0, detail: 'no image reaches the screen' };
+    }
+
+    const rms = diagnostics.rms;
+    // The reference defaults to the blur the goal already calls sharp enough, so an author who has
+    // chosen `max` does not have to choose a second, closely related number as well.
+    const reference = goal.reference ?? goal.max;
+    const satisfied = rms <= goal.max;
+
+    return {
+      satisfied,
+      progress: satisfied ? 1 : imageQuality(rms, reference),
+      detail: `blur ${rms.toFixed(2)} units across (need ${goal.max})`,
+    };
+  },
+};
+
+/**
+ * Require the picture on an imaging screen to come out the right size.
+ *
+ * Without this, an exercise about sharpness has a cheat in it. A system with a lot of spherical
+ * aberration has no one focal plane, and its tightest waist — the circle of least confusion — sits
+ * well in front of where the picture is supposed to be, where the picture is also markedly smaller.
+ * Sliding the screen there does improve the blur, but it answers a different question. Pinning the
+ * size makes the student fix the optics instead of the framing.
+ */
+const imageSize = {
+  validate(goal) {
+    if (!goal.screen) return "goal of type 'imageSize' requires 'screen' (the name of an ImageScreen)";
+    if (typeof goal.target !== 'number') {
+      return "goal of type 'imageSize' requires a numeric 'target' (the magnification asked for)";
+    }
+    return null;
+  },
+
+  getTargets(goal) {
+    return [];
+  },
+
+  evaluate(goal, context) {
+    const screen = findObjByName(context, goal.screen);
+    if (!screen) {
+      return { satisfied: false, progress: 0, detail: `no object named "${goal.screen}"` };
+    }
+    const measured = screen.diagnostics?.imageMagnification;
+    if (typeof measured !== 'number' || !(measured > 0)) {
+      return { satisfied: false, progress: 0, detail: 'no image reaches the screen' };
+    }
+
+    const tolerance = goal.tolerance ?? Math.abs(goal.target) * 0.05;
+    const error = Math.abs(measured - goal.target);
+    const satisfied = error <= tolerance;
+    return {
+      satisfied,
+      progress: satisfied ? 1 : closenessScore(error, tolerance),
+      detail: `the picture is ${measured.toFixed(2)} times life size (target ${goal.target})`,
+    };
+  },
+};
+
+/**
+ * Require the lenses of a system to add up to a given focusing power.
+ *
+ * This is the constraint that makes an exercise about splitting a lens an exercise rather than a
+ * puzzle with a trivial answer: without it, the way to a sharp image is simply to stop bending the
+ * light so much, which is true, useless, and not what is being taught. Holding the sum fixed leaves
+ * only the question the exercise is about — how that bending should be distributed.
+ */
+const lensPowerSum = {
+  validate(goal) {
+    if (typeof goal.target !== 'number') return "goal of type 'lensPowerSum' requires a numeric 'target'";
+    if (goal.lenses !== undefined && !Array.isArray(goal.lenses)) {
+      return "goal of type 'lensPowerSum': 'lenses' must be an array of object names";
+    }
+    return null;
+  },
+
+  getTargets(goal) {
+    return [];
+  },
+
+  evaluate(goal, context) {
+    const power = totalLensPower(context.scene, goal.lenses || null);
+    const tolerance = goal.tolerance ?? Math.abs(goal.target) * 0.02;
+    const error = Math.abs(power - goal.target);
+    const satisfied = error <= tolerance;
+
+    // Focal lengths are what a student reads off the screen, so say it in those terms as well.
+    const asFocalLength = power !== 0 ? (1 / power).toFixed(1) : 'infinite';
+    return {
+      satisfied,
+      progress: satisfied ? 1 : closenessScore(error, tolerance),
+      detail: `total power ${power.toFixed(5)} (a single lens of ${asFocalLength} units), target ${goal.target.toFixed(5)}`,
+    };
+  },
+};
+
 /**
  * The registry of goal types, keyed by the `type` field of a goal in the scene JSON.
  * @const {Object<string, Object>}
@@ -508,4 +638,7 @@ export const GOAL_TYPES = {
   collimated,
   detectorPower,
   objectProperty,
+  imageSharpness,
+  imageSize,
+  lensPowerSum,
 };

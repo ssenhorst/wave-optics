@@ -32,7 +32,7 @@
  * The pictures the widget can draw, by name.
  * @const {Array<string>}
  */
-export const ILLUSTRATION_PICTURES = ['church'];
+export const ILLUSTRATION_PICTURES = ['church', 'apple'];
 
 const ILLUSTRATION_KEYS = ['picture', 'top', 'bottom', 'imageGoals', 'showImage', 'opacity'];
 

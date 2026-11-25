@@ -226,6 +226,10 @@
     },
     "moreTools": {
       "title": "More Tools"
+    },
+    "ImageScreen": {
+      "title": "Imaging screen",
+      "description": "A screen of fixed size placed across the optical axis, showing the picture the system actually forms on it. The ray diagram is a cross section through the axis; the screen shows the plane perpendicular to it, turned towards you, so that moving the screen through focus is seen as the picture sharpening and blurring."
     }
   },
   "view": {

@@ -60,6 +60,8 @@ const COMMON_GOAL_KEYS = ['id', 'type', 'title', 'description', 'weight', 'showT
 
 const TYPE_SPECIFIC_KEYS = ['point', 'radius', 'count', 'minDepth', 'angle', 'direction', 'tolerance',
   'detector', 'min', 'target', 'object', 'property', 'source',
+  // Imaging goals, which read what the screen's renderer measured.
+  'screen', 'reference', 'lenses',
   // Wave-optics goals, which probe the field along a line rather than counting rays.
   'line', 'samples', 'spacing', 'threshold', 'order', 'max', 'dip'];
 

@@ -291,10 +291,15 @@
       "defBy": {
         "radiiOfCurvature": "Radii of Curvature",
         "focalDistances": "Focal Distances",
-        "focalLength": "Thickness and focal length"
+        "focalLength": "Thickness and focal length",
+        "focalLengthAndShape": "Focal length and shape"
       },
       "invalidParameters": "Invalid lens parameters",
-      "thicknessTooSmall": "The lens is too thin for this focal length and aperture: its surfaces meet before the rim. Increase the thickness, shorten the lens, or use a longer focal length."
+      "thicknessTooSmall": "The lens is too thin for this focal length and aperture: its surfaces meet before the rim. Increase the thickness, shorten the lens, or use a longer focal length.",
+      "shapeFactor": "Shape",
+      "shapeFactorInfo": "<p>How the lens is bent, at a fixed focal length: 0 is equiconvex, +1 and -1 are the two plano-convex orientations, and beyond them the lens becomes a meniscus. Bending a lens leaves its focal length alone but changes its aberration a great deal.</p>",
+      "power": "Focusing power",
+      "powerInfo": "<p>How strongly the lens bends the light: one divided by the focal length, times a thousand. Unlike focal length, powers add up — two lenses close together focus as hard as one lens of their combined power — and a stronger lens has a bigger number.</p>"
     },
     "CustomGlass": {
       "curveGenerationError": "Curve generation error: f(x) > g(x) at x = {{x}}"
@@ -515,6 +520,11 @@
       "appearanceRefIndex": "Refractive index (shape only)",
       "lensThickness": "Thickness (0 = automatic)",
       "appearanceInfo": "The lens always refracts exactly as an ideal lens. These settings only decide what it is drawn to look like: the shape a real lens of this focal length would have at the given refractive index."
+    },
+    "ImageScreen": {
+      "panelScale": "Panel size",
+      "showFrame": "Show frame",
+      "targetMagnification": "Target size (x life size)"
     }
   },
   "saveModal": {

@@ -21,6 +21,7 @@ import { validateInteraction } from './interaction.js';
 import { validateUiOptions } from './uiOptions.js';
 import { validateTask } from './goals/TaskEvaluator.js';
 import { validateIllustration } from './illustration.js';
+import { validateControls } from './controls.js';
 import i18next from 'i18next';
 import seedrandom from 'seedrandom';
 
@@ -205,6 +206,7 @@ function extractNonDefaults(obj, defaults) {
  * @property {Object} interaction - The scene-level interaction permissions, which decide what the user is allowed to do with the scene. See {@link module:interaction} for the available keys. Individual objects may override them with their own `interaction` property.
  * @property {Object} ui - The parts of the user interface that are shown. See {@link module:uiOptions} for the available keys. This lets a scene be presented as a minimal embeddable widget instead of the full editor.
  * @property {Object|null} illustration - A picture drawn at the object and at the image the system forms of it, which shows the size and orientation of the image directly. See {@link module:illustration}.
+ * @property {Object|null} controls - An always-visible panel of sliders and read-only meters, for a scene whose student has never seen a ray diagram before. See {@link module:controls}.
  * @property {Object|null} task - The assignment posed by the scene: a title, an optional description and hint, and a list of goals evaluated against the simulation. See {@link TaskEvaluator}.
  */
 class Scene {
@@ -241,6 +243,7 @@ class Scene {
     ui: {},
     task: null,
     illustration: null,
+    controls: null,
 
     waveOptics: {
       wavelength: 20,
@@ -601,6 +604,7 @@ class Scene {
         validateUiOptions(jsonData.ui),
         validateTask(jsonData.task),
         validateIllustration(jsonData.illustration),
+        validateControls(jsonData.controls),
       ];
       for (const structuredError of structuredErrors) {
         if (structuredError) {

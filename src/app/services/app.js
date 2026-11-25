@@ -43,6 +43,9 @@ import { statusEmitter, STATUS_EVENT_NAMES } from '../composables/useStatus.js';
 import { setActiveEngineKind } from
   '../composables/useSimulationEngineState.js';
 import { mapURL, parseLinks } from '../utils/links.js';
+import ScreenImageController from '../../core/imaging/ScreenImageController.js';
+import churchPicture from '../../img/delft_new_church.svg';
+import applePicture from '../../img/half_red_half_green_apple.svg';
 import { parseShapesFile } from '../utils/svgImport.js';
 import {
   prepareImportedPaths,
@@ -252,9 +255,64 @@ function createSimulator(engine) {
   return primitiveSimulator;
 }
 
+/**
+ * The controller that keeps every imaging screen in the scene showing the picture the system forms
+ * on it. The editor needs it as much as the task widget does: a scene being authored with a screen
+ * in it would otherwise show a blank panel, and the whole point of the screen is what is on it.
+ * @type {ScreenImageController|null}
+ */
+let screenImages = null;
+
+/** The pictures an `illustration` can name, as loaded images. */
+const illustrationPictures = {};
+
+/** Whether the redraw now in flight is the one the screens asked for. */
+let redrawingForScreens = false;
+
+/**
+ * Make sure the screens are up to date, loading the object's picture the first time it is wanted.
+ * @param {boolean} preview - Whether to use the coarse preset.
+ */
+function updateScreenImages(preview) {
+  if (!scene.objs.some(obj => obj?.constructor?.type === 'ImageScreen')) return;
+
+  if (!screenImages) {
+    screenImages = new ScreenImageController(scene, {
+      onRendered: () => {
+        // Redrawing emits the simulator's own update event, which is what asked for this render,
+        // so it is deferred to the next frame and flagged while it runs.
+        if (redrawingForScreens) return;
+        requestAnimationFrame(() => {
+          redrawingForScreens = true;
+          try {
+            simulator?.updateSimulation?.(true, true);
+          } finally {
+            redrawingForScreens = false;
+          }
+        });
+      },
+    });
+  }
+
+  const name = scene.illustration?.picture;
+  const sources = { church: churchPicture, apple: applePicture };
+  if (name && sources[name]) {
+    if (!illustrationPictures[name]) {
+      const image = new Image();
+      image.onload = () => updateScreenImages(false);
+      image.src = sources[name];
+      illustrationPictures[name] = image;
+    }
+    screenImages.setObjectPicture(illustrationPictures[name]);
+  }
+
+  screenImages.update({ preview });
+}
+
 function bindSimulatorEventListeners(targetSimulator) {
   targetSimulator.on('update', function () {
     canvasBelowLight.style.backgroundColor = `rgb(${Math.round(scene.theme.background.color.r * 255)}, ${Math.round(scene.theme.background.color.g * 255)}, ${Math.round(scene.theme.background.color.b * 255)})`;
+    if (!redrawingForScreens) updateScreenImages(true);
   });
 
   targetSimulator.on('simulationStart', function () {
@@ -291,6 +349,7 @@ function bindSimulatorEventListeners(targetSimulator) {
   });
 
   targetSimulator.on('simulationComplete', function () {
+    updateScreenImages(false);
     statusEmitter.emit(STATUS_EVENT_NAMES.SIMULATOR_STATUS, {
       rayCount: targetSimulator.processedRayCount,
       totalTruncation: targetSimulator.totalTruncation,

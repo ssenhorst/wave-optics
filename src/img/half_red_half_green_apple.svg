@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 620" width="600" height="620" role="img" aria-labelledby="title desc">
+  <title id="title">Semi-realistic apple, split horizontally red and green</title>
+  <desc id="desc">A glossy apple with a horizontal division: red on the top half and green on the bottom half.</desc>
+  <defs>
+    <linearGradient id="redSkin" x1="0" y1="0" x2="0.15" y2="1">
+      <stop offset="0" stop-color="#a81727"/>
+      <stop offset=".28" stop-color="#e53b3d"/>
+      <stop offset=".68" stop-color="#cf202f"/>
+      <stop offset="1" stop-color="#8f1520"/>
+    </linearGradient>
+    <linearGradient id="greenSkin" x1="0" y1="0" x2=".15" y2="1">
+      <stop offset="0" stop-color="#477f1d"/>
+      <stop offset=".3" stop-color="#8fc735"/>
+      <stop offset=".7" stop-color="#a9d942"/>
+      <stop offset="1" stop-color="#5b9124"/>
+    </linearGradient>
+    <linearGradient id="shine" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#fff" stop-opacity=".02"/>
+      <stop offset=".45" stop-color="#fff" stop-opacity=".52"/>
+      <stop offset="1" stop-color="#fff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="stem" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#4a2916"/>
+      <stop offset=".45" stop-color="#9b6231"/>
+      <stop offset="1" stop-color="#3c2114"/>
+    </linearGradient>
+    <radialGradient id="shadow" cx=".5" cy=".5" r=".5">
+      <stop offset="0" stop-color="#3a2415" stop-opacity=".3"/>
+      <stop offset="1" stop-color="#3a2415" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="appleShape">
+      <path d="M300 150 C270 123 229 126 196 143 C139 171 103 222 100 293 C96 380 139 477 211 520 C245 540 274 526 300 518 C326 526 355 540 389 520 C461 477 504 380 500 293 C497 222 461 171 404 143 C371 126 330 123 300 150 Z"/>
+    </clipPath>
+  </defs>
+  <ellipse cx="300" cy="548" rx="190" ry="28" fill="url(#shadow)"/>
+  <g clip-path="url(#appleShape)">
+    <!-- Horizontal split: red above, green below -->
+    <rect x="90" y="120" width="420" height="220" fill="url(#redSkin)"/>
+    <rect x="90" y="340" width="420" height="210" fill="url(#greenSkin)"/>
+    <g fill="#fff3c4" opacity=".23">
+      <circle cx="151" cy="250" r="2.2"/><circle cx="184" cy="315" r="1.8"/>
+      <circle cx="230" cy="205" r="2.1"/><circle cx="255" cy="370" r="2.4"/>
+      <circle cx="166" cy="420" r="2"/><circle cx="222" cy="464" r="1.8"/>
+      <circle cx="343" cy="230" r="2"/><circle cx="398" cy="276" r="2.3"/>
+      <circle cx="445" cy="350" r="1.8"/><circle cx="367" cy="410" r="2.2"/>
+      <circle cx="421" cy="455" r="1.9"/><circle cx="326" cy="475" r="1.7"/>
+      <circle cx="470" cy="245" r="1.7"/><circle cx="386" cy="190" r="1.8"/>
+    </g>
+    <g fill="#591c18" opacity=".17">
+      <circle cx="139" cy="340" r="2.3"/><circle cx="203" cy="270" r="1.6"/>
+      <circle cx="242" cy="435" r="2"/><circle cx="278" cy="300" r="1.7"/>
+      <circle cx="330" cy="330" r="1.8"/><circle cx="376" cy="360" r="2"/>
+      <circle cx="454" cy="410" r="1.8"/><circle cx="417" cy="220" r="2"/>
+    </g>
+    <ellipse cx="193" cy="285" rx="42" ry="91" fill="url(#shine)" transform="rotate(18 193 285)" opacity=".8"/>
+    <ellipse cx="393" cy="400" rx="39" ry="86" fill="url(#shine)" transform="rotate(17 393 400)" opacity=".75"/>
+    <path d="M100 340 C190 336 260 344 300 340 C365 336 432 344 500 340" fill="none" stroke="#5e4a1b" stroke-opacity=".35" stroke-width="2"/>
+  </g>
+  <path d="M300 150 C270 123 229 126 196 143 C139 171 103 222 100 293 C96 380 139 477 211 520 C245 540 274 526 300 518 C326 526 355 540 389 520 C461 477 504 380 500 293 C497 222 461 171 404 143 C371 126 330 123 300 150 Z"
+        fill="none" stroke="#66331c" stroke-opacity=".55" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M266 151 C280 141 321 141 334 151" fill="none" stroke="#6f381d" stroke-opacity=".5" stroke-width="5" stroke-linecap="round"/>
+  <path d="M296 151 C291 126 292 102 301 79 C305 69 317 68 321 78 C315 101 313 127 310 151 Z"
+        fill="url(#stem)" stroke="#4b2a17" stroke-width="2"/>
+  <path d="M304 84 C301 105 301 128 303 143" fill="none" stroke="#d59a55" stroke-opacity=".65" stroke-width="3" stroke-linecap="round"/>
+  <path d="M147 232 C158 207 179 190 199 184" fill="none" stroke="#fff" stroke-opacity=".43" stroke-width="8" stroke-linecap="round"/>
+  <path d="M355 184 C374 178 395 184 408 198" fill="none" stroke="#fff" stroke-opacity=".38" stroke-width="7" stroke-linecap="round"/>
+</svg>

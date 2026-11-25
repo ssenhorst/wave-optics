@@ -33,6 +33,9 @@ import { createWaveRenderingContext } from '../core/waveOptics/WaveFieldEngineWe
 import { resolveUiOptions } from '../core/uiOptions.js';
 import { getObjectPlacement, getImagePlacement } from '../core/illustration.js';
 import churchPicture from '../img/delft_new_church.svg';
+import applePicture from '../img/half_red_half_green_apple.svg';
+import ScreenImageController from '../core/imaging/ScreenImageController.js';
+import ControlPanel from './ControlPanel.js';
 import { sceneAllows, objAllows, objAllowsProperty } from '../core/interaction.js';
 import { FIELD_VIEWS } from '../core/waveOptics/conventions.js';
 import { resolveWaveSettings } from '../core/waveOptics/waveSceneModel.js';
@@ -173,6 +176,9 @@ class TaskWidget {
     this.inspectorNode = el('div', 'ro-inspector');
     this.stage.appendChild(this.inspectorNode);
 
+    this.slidersNode = el('div', 'ro-sliders');
+    this.stage.appendChild(this.slidersNode);
+
     this.panel = el('aside', 'ro-panel');
 
     this.container.appendChild(this.stage);
@@ -220,9 +226,24 @@ class TaskWidget {
     this.overlay = new GoalOverlay(this.canvasOverlay, this.scene);
     this.overlay.dpr = this.simulator.dpr;
 
+    // The screens render themselves from the scene rather than from the ray trace, so they are
+    // driven separately: a coarse picture while something is being dragged, a fine one once it
+    // settles, and a rescore whenever either arrives.
+    this.screenImages = new ScreenImageController(this.scene, {
+      onRendered: () => this.onScreenImageRendered(),
+    });
+
     this.inspector = new Inspector(this.inspectorNode, this.scene, this.simulator, this.editor);
+
+    this.controlPanel = new ControlPanel(this.slidersNode, this.scene, {
+      onChange: (live) => {
+        this.simulator.updateSimulation(false, true);
+        if (!live) this.editor.onActionComplete();
+      },
+    });
     this.editor.on('selectionChange', (e) => {
-      this.inspector.show(this.ui && this.ui.objectBar ? e.newIndex : -1);
+      const showInspector = this.ui && this.ui.objectBar && !this.controlPanel?.active;
+      this.inspector.show(showInspector ? e.newIndex : -1);
     });
 
     if (this.isWave) {
@@ -230,12 +251,19 @@ class TaskWidget {
       // finishes; the goals are scored on the CPU from the scene, so the event is only a trigger.
       this.simulator.on('fieldComputed', () => this.evaluateTask());
     } else {
-      this.simulator.on('simulationComplete', () => this.evaluateTask());
+      this.simulator.on('simulationComplete', () => {
+        this.screenImages.update({ preview: false });
+        this.evaluateTask();
+      });
       this.simulator.on('simulationStop', () => this.evaluateTask());
     }
     this.simulator.on('update', () => {
       this.refreshAffordances();
       this.refreshPictures();
+      this.controlPanel?.refresh();
+      // Not while this very redraw is the one the screens asked for, or the two would chase each
+      // other round the event loop.
+      if (!this.redrawingForScreens) this.screenImages.update({ preview: true });
     });
 
     this.resizeObserver = new ResizeObserver(() => this.resize());
@@ -287,6 +315,13 @@ class TaskWidget {
     this.lastStatus = null;
     this.loadIllustration();
 
+    if (this.screenImages) {
+      this.screenImages.fingerprints = {};
+      const picture = this.pictures[this.scene.illustration?.picture];
+      if (picture) this.screenImages.setObjectPicture(picture);
+      this.screenImages.update({ preview: false });
+    }
+
     this.overlay.setTargets(this.ui.showTargets ? this.taskEvaluator.getTargets() : []);
     this.overlay.setGoals([]);
     this.refreshAffordances();
@@ -295,6 +330,7 @@ class TaskWidget {
 
     this.buildPanel();
     this.buildControls();
+    this.controlPanel.build();
     this.applyAnimationSetting();
     this.refreshPlayButton();
     this.inspector.show(-1);
@@ -489,6 +525,32 @@ class TaskWidget {
   }
 
   /**
+   * Put a freshly rendered screen picture on the canvas.
+   *
+   * The picture is drawn by the screen object in the layer below the light, so getting it on screen
+   * means asking the simulator to redraw that layer — which it does by emitting its own update, the
+   * very event that asked for this render. The redraw is therefore deferred to the next frame and
+   * flagged while it runs, so that a render cannot set off another one.
+   */
+  onScreenImageRendered() {
+    if (this.destroyed || this.screenRedrawPending) return;
+    this.screenRedrawPending = true;
+    requestAnimationFrame(() => {
+      this.screenRedrawPending = false;
+      if (this.destroyed || !this.simulator) return;
+      this.redrawingForScreens = true;
+      try {
+        // Redraw the decorations and the screens only; the ray trace itself has not changed.
+        this.simulator.updateSimulation(true, true);
+      } finally {
+        this.redrawingForScreens = false;
+      }
+      this.evaluateTask();
+      this.controlPanel?.refresh();
+    });
+  }
+
+  /**
    * Load the picture the scene's `illustration` asks for, once per widget. The picture is compiled
    * into the bundle, so nothing is fetched over the network.
    */
@@ -496,11 +558,19 @@ class TaskWidget {
     const name = this.scene.illustration?.picture;
     if (!name || this.pictures[name]) return;
 
-    const sources = { church: churchPicture };
+    const sources = { church: churchPicture, apple: applePicture };
     if (!sources[name]) return;
 
     const image = new Image();
-    image.onload = () => this.refreshPictures();
+    image.onload = () => {
+      this.refreshPictures();
+      // The same picture is both what is drawn at the object and what the screens form an image of,
+      // so a screen cannot render anything until it has loaded.
+      if (this.screenImages) {
+        this.screenImages.setObjectPicture(image);
+        this.screenImages.update({ preview: false });
+      }
+    };
     image.src = sources[name];
     this.pictures[name] = image;
   }
@@ -727,6 +797,7 @@ class TaskWidget {
     this.destroyed = true;
     this.simulator?.stopAnimation?.();
     this.overlay?.stop();
+    this.screenImages?.destroy();
     this.resizeObserver?.disconnect();
     this.canvasAboveLight?.removeEventListener('keydown', this.onKeyDown);
   }

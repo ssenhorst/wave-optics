@@ -306,6 +306,37 @@ A named `Detector` in the scene must read at least `min`, or `target` within `to
 { "type": "detectorPower", "detector": "Screen", "min": 0.8 }
 ```
 
+### `imageSharpness`
+
+How badly a point of the object is smeared by the time it reaches a named {@link ImageScreen},
+measured as the root-mean-square spot radius averaged over the field. `max` is the blur that counts
+as sharp enough; `reference` sets how fast the bar fills on the way there and defaults to `max`.
+
+```json
+{ "type": "imageSharpness", "screen": "Screen", "max": 5, "reference": 5 }
+```
+
+### `imageSize`
+
+The picture on a named screen must come out `target` times life size, within `tolerance`. Any task
+about aberration needs this as well as `imageSharpness`: a system with spherical aberration has a
+waist well in front of where the picture belongs, and sliding the screen there improves the blur by
+shrinking the picture rather than by fixing the optics.
+
+```json
+{ "type": "imageSize", "screen": "Screen", "target": 1.4, "tolerance": 0.09 }
+```
+
+### `lensPowerSum`
+
+The lenses named in `lenses` — by default every lens in the scene — must add up to `target` in
+reciprocal length units, within `tolerance`. This is the constraint that makes an exercise about
+distributing power an exercise at all.
+
+```json
+{ "type": "lensPowerSum", "lenses": ["Lens 1", "Lens 2"], "target": 0.0034286, "tolerance": 0.00008 }
+```
+
 ### `objectProperty`
 
 A numeric property of a named object must reach `target` within `tolerance`.
@@ -313,6 +344,145 @@ A numeric property of a named object must reach `target` within `tolerance`.
 ```json
 { "type": "objectProperty", "object": "Relay", "property": "focalLength", "target": 108.75, "tolerance": 2 }
 ```
+
+## `ImageScreen` — the picture, not just where it is
+
+A ray diagram is a slice through the optical axis. The picture a system forms lies in the plane
+perpendicular to that slice, which the diagram never shows, and an exercise about image quality is
+about exactly that plane. `ImageScreen` draws it: a bar standing across the axis in the diagram,
+carrying the plane it occupies turned towards the viewer, with the picture the system throws on it.
+
+```json
+{ "type": "ImageScreen", "name": "Screen",
+  "p1": { "x": 1450, "y": 325 }, "p2": { "x": 1450, "y": 575 },
+  "panelScale": 1, "showFrame": true, "targetMagnification": 1.4,
+  "caption": "what the screen sees" }
+```
+
+| Property              | Meaning                                                                 |
+|-----------------------|-------------------------------------------------------------------------|
+| `p1`, `p2`            | The screen in the diagram. Its length is its real size, both ways.       |
+| `panelScale`          | How large the turned-towards-you panel is drawn, 1 being life size.      |
+| `showFrame`           | A frame and corner marks, which make it read as a plane seen face on.    |
+| `targetMagnification` | Draws a dashed outline of the object at the size the picture should be.  |
+| `caption`             | A label under the panel.                                                 |
+
+The object is the scene's `illustration` picture, located by the two light sources it names, so one
+`illustration` block serves both the drawing in the diagram and the thing that is imaged. Leave
+`imageGoals` out when a scene has a screen: the screen already shows the image, and a second ghost
+picture floating in the diagram only competes with it.
+
+### How the picture is produced
+
+The picture is not drawn by the ray tracer the diagram uses, which works in the plane of the page
+only. `src/core/imaging/` traces the system in three dimensions instead, sequentially through each
+surface of revolution, which is what an optical designer does and the only way to get the skew rays
+that carry coma and astigmatism. It traces a spot diagram for a ladder of field heights and stamps
+that, rotated and interpolated, once per pixel of the object, so the blur varies across the picture
+exactly as the aberrations do. It is geometrical optics throughout: no diffraction, no scattering,
+no interference.
+
+Only `SphericalLens`, `IdealLens` and `Aperture` are understood, and only between the object and the
+screen. Everything else in the scene is ignored, so rulers, labels and the light sources that draw
+the example rays cost nothing. An element that is tilted or off the axis is left out and reported
+rather than approximated.
+
+### Where it runs
+
+The scatter — every object point through every pupil point onto the screen — is a few million
+additive writes to a float buffer, which is what a GPU is for and what a CPU is worst at. Where
+WebGL2 is available with `EXT_color_buffer_float` and `EXT_float_blend`, it is one draw call of a
+few million points; `src/core/imaging/webglScreenRenderer.js` does that, and
+`src/core/imaging/screenRenderer.js` does the same thing on the CPU wherever it is not. The ray
+tracing itself stays on the CPU either way: there are only a few thousand rays, and they are what
+the task is scored from.
+
+Two resolutions are rendered rather than one. A coarse picture is drawn while something is being
+dragged, and a fine one about a seventh of a second after it stops, so that dragging the screen
+through focus keeps up with the hand while the settled picture is the one worth looking at. On an
+M1 laptop the coarse pass costs about 10 ms and the fine one about 30 ms; on the CPU fallback the
+fine one is nearer 80 ms.
+
+### A lens the student turns by its power and its shape
+
+`SphericalLens` accepts a fourth `defBy`, `"DFX"`, which gives the lens as a thickness, an effective
+focal length and a *shape factor* `x = (r2 + r1) / (r2 - r1)`:
+
+```json
+{ "type": "SphericalLens", "defBy": "DFX",
+  "p1": { "x": 750, "y": 365 }, "p2": { "x": 750, "y": 535 },
+  "params": { "d": 28, "f": 291.6667, "x": 0 }, "refIndex": 1.5 }
+```
+
+The two radii do not separate how strongly a lens focuses from how it is bent — moving either one
+changes both — which makes a lens impossible to reason about one number at a time. These two do:
+`f` alone sets the focusing, and `x` alone sets the bending, 0 being equiconvex and ±1 the two
+plano-convex orientations.
+
+Such a lens exposes three writable properties, any of which can be put on a slider or named in
+`interaction.properties`:
+
+| Property       | What it is                                                                   |
+|----------------|-------------------------------------------------------------------------------|
+| `power`        | 1000 / f. **Prefer this to `focalLength` in anything a beginner will touch.**  |
+| `focalLength`  | The effective focal length.                                                    |
+| `shapeFactor`  | The bending, `x`.                                                              |
+
+Focal length is the wrong number to put in front of someone meeting optics for the first time: it
+runs backwards, since a stronger lens has a *smaller* one, and two lenses together do not add up in
+it. Powers do both correctly, which is the whole reason an exercise about sharing the focusing
+between several elements is legible at all. The thousandfold scaling keeps the numbers small; on a
+scene drawn in millimetres it is exactly the dioptre.
+
+## `controls` — sliders that are always on screen
+
+Dragging things on the canvas and typing into the object bar assume a student who will poke at a
+diagram to find out what is live. Someone looking at their first ray diagram will not: they do not
+know the lenses are the parts that matter, or that a lens has a strength that can be changed, and an
+object bar that appears only once you have already clicked the right thing is no help. `controls`
+puts every adjustable quantity on screen, named, with its range shown by where the handle sits.
+
+```json
+"controls": {
+  "title": "The three lenses",
+  "note": "Watch the steepest angle as you move the sliders.",
+  "groups": [
+    { "object": "Lens 1", "label": "Lens 1 — front",
+      "sliders": [
+        { "property": "power", "label": "Focusing power", "min": 0, "max": 3.6, "step": 0.02,
+          "help": "Shown as a tooltip." },
+        { "property": "shapeFactor", "label": "Shape", "min": -1.5, "max": 1.5, "step": 0.05 }
+      ] }
+  ],
+  "meters": [
+    { "source": "maxIncidence", "label": "Steepest angle at the glass", "screen": "Screen",
+      "min": 0, "max": 55, "suffix": "°", "decimals": 0, "lowerIsBetter": true }
+  ]
+}
+```
+
+A slider writes straight to the named property of the named object, so it is subject to the same
+`interaction.properties` permissions as every other way of changing it — a scene that shows a slider
+must also allow that property. When a scene states `controls`, the pop-up object-bar inspector is
+suppressed, because two differently-worded ways to change the same number is worse than one.
+
+### `meters` — the read-only half
+
+A meter shows a number the exercise is about but that is not a goal. This is what makes a cause
+visible: an exercise about aberration is about how steeply rays meet the glass, and a ray diagram
+does not say that out loud unless something puts a number on it.
+
+| `source`        | What it reads                                                              |
+|-----------------|-----------------------------------------------------------------------------|
+| `maxIncidence`  | The steepest angle, in degrees, at which any traced ray met a glass surface. |
+| `imageBlur`     | The RMS spot radius on the named screen, in scene units.                     |
+| `imageSize`     | How many times life size the picture is.                                     |
+| `lensPowerSum`  | The summed power of `lenses`, in the same units as the `power` property.     |
+
+`min` and `max` set the ends of the bar, `lowerIsBetter` fills it as the value falls, and `target`
+with `tolerance` turns it amber when the value drifts off. `suffix` and `decimals` set the
+formatting. Everything but `lensPowerSum` is measured by the last screen render, so a meter reads
+`—` until the first picture has been drawn.
 
 ## Wave optics tasks
 
